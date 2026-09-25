@@ -481,3 +481,157 @@ fn a_client_that_hangs_up_mid_conversation_does_not_disturb_the_daemon() {
     }
     assert_eq!(daemon.ask(&json!({"op": "info"}))["ok"], true);
 }
+
+// ---- ranges, subsets and downsampling ---------------------------------------
+
+/// Every record's timestamp, asking for one cheap metric.
+fn all_timestamps(daemon: &Daemon) -> Vec<u64> {
+    let reply = daemon.ask(&json!({"op": "read", "metrics": ["load1"]}));
+    reply["timestamps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn a_subset_of_metrics_returns_only_those() {
+    let daemon = Daemon::start(&[]);
+    daemon.wait_for_records(2);
+    let reply = daemon.ask(&json!({"op": "read", "metrics": ["load1", "cpu_temp_celsius"]}));
+    assert_eq!(reply["ok"], true);
+    let series = reply["series"].as_object().unwrap();
+    assert_eq!(series.len(), 2);
+    assert_eq!(series["load1"][0], 0.07);
+    assert_eq!(series["cpu_temp_celsius"][0], 48.686);
+}
+
+#[test]
+fn an_unknown_metric_is_refused_by_name() {
+    let daemon = Daemon::start(&[]);
+    let reply = daemon.ask(&json!({"op": "read", "metrics": ["load1", "no_such_metric"]}));
+    assert_eq!(reply["ok"], false);
+    assert!(reply["error"].as_str().unwrap().contains("no_such_metric"));
+}
+
+#[test]
+fn a_time_range_returns_only_records_inside_it() {
+    let daemon = Daemon::start(&[]);
+    daemon.wait_for_records(6);
+    let all = all_timestamps(&daemon);
+    let (from, to) = (all[2], all[4]);
+
+    let reply = daemon.ask(&json!({"op": "read", "metrics": ["load1"], "from": from, "to": to}));
+    let got: Vec<u64> = reply["timestamps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_u64().unwrap())
+        .collect();
+    // Both ends are included, and nothing outside them.
+    assert_eq!(got, all[2..=4]);
+
+    let later = daemon.ask(&json!({"op": "read", "from": u64::MAX - 1}));
+    assert_eq!(later["ok"], true);
+    assert_eq!(later["timestamps"], json!([]));
+}
+
+#[test]
+fn max_points_limits_the_number_of_points_and_reports_the_step() {
+    let daemon = Daemon::start(&[]);
+    daemon.wait_for_records(20);
+    let reply = daemon.ask(&json!({"op": "read", "metrics": ["load1"], "max_points": 4}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let step = reply["step_ms"].as_u64().unwrap();
+    assert_eq!(step % 100, 0, "a whole number of the 100 ms samples");
+    let points = reply["timestamps"].as_array().unwrap();
+    assert!((1..=4).contains(&points.len()), "{} points", points.len());
+    assert_eq!(
+        reply["series"]["load1"].as_array().unwrap().len(),
+        points.len()
+    );
+    for t in points {
+        assert_eq!(
+            t.as_u64().unwrap() % step,
+            0,
+            "buckets are aligned to the step"
+        );
+    }
+}
+
+#[test]
+fn a_step_gives_one_value_per_bucket_and_extremes_bracket_the_mean() {
+    let daemon = Daemon::start(&[]);
+    daemon.wait_for_records(10);
+    let reply = daemon.ask(&json!({
+        "op": "read", "metrics": ["net_eth0_rx_bytes_per_sec"], "step_ms": 300, "extremes": true
+    }));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["step_ms"], 300);
+    let name = "net_eth0_rx_bytes_per_sec";
+    let (avg, min, max) = (
+        &reply["series"][name],
+        &reply["min"][name],
+        &reply["max"][name],
+    );
+    let buckets = reply["timestamps"].as_array().unwrap().len();
+    assert!(buckets >= 2);
+    for column in [avg, min, max] {
+        assert_eq!(column.as_array().unwrap().len(), buckets);
+    }
+    for i in 0..buckets {
+        // The fixture's counters never move, so every measured rate is zero
+        // (the very first record has none, so its bucket may be empty).
+        if let (Some(a), Some(lo), Some(hi)) = (avg[i].as_f64(), min[i].as_f64(), max[i].as_f64()) {
+            assert!(lo <= a && a <= hi, "bucket {i}: {lo} <= {a} <= {hi}");
+            assert!(a.abs() < f64::EPSILON, "{a}");
+        }
+    }
+}
+
+#[test]
+fn a_downsampled_range_uses_the_same_bucket_edges_as_the_whole() {
+    let daemon = Daemon::start(&[]);
+    daemon.wait_for_records(10);
+    let whole = daemon.ask(&json!({"op": "read", "metrics": ["load1"], "step_ms": 500}));
+    let edges: Vec<u64> = whole["timestamps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_u64().unwrap())
+        .collect();
+    // Ask again from a time in the middle: its buckets are ones of the first.
+    let from = edges[edges.len() / 2] + 137;
+    let part =
+        daemon.ask(&json!({"op": "read", "metrics": ["load1"], "step_ms": 500, "from": from}));
+    for t in part["timestamps"].as_array().unwrap() {
+        assert!(
+            edges.contains(&t.as_u64().unwrap()),
+            "{t} is not one of {edges:?}"
+        );
+    }
+}
+
+#[test]
+fn bad_read_options_are_refused_and_the_connection_survives() {
+    let daemon = Daemon::start(&[]);
+    let mut client = Client::connect(&daemon.socket());
+    for (request, expected) in [
+        (r#"{"op":"read","from":5,"to":1}"#, "must not be after"),
+        (r#"{"op":"read","from":-1}"#, "whole number"),
+        (r#"{"op":"read","metrics":[]}"#, "must not be empty"),
+        (r#"{"op":"read","step_ms":0}"#, "at least 1"),
+        (r#"{"op":"read","max_points":1}"#, "between 2 and"),
+        (r#"{"op":"read","step_ms":10,"max_points":10}"#, "together"),
+        (r#"{"op":"read","extremes":true}"#, "needs"),
+    ] {
+        let reply = client.ask(request);
+        assert_eq!(reply["ok"], false, "{request}");
+        assert!(
+            reply["error"].as_str().unwrap().contains(expected),
+            "{request}: {reply}"
+        );
+    }
+    assert_eq!(client.ask(r#"{"op":"info"}"#)["ok"], true);
+}
