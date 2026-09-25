@@ -92,5 +92,9 @@ jobs:
       - name: Check it is statically linked and runs
         run: |
           binary=target/${{ matrix.target }}/release/simple-metrics
-          file "$binary" | grep -q "statically linked"
+          info=$(file "$binary")
+          echo "$info"
+          # `file` says "statically linked" on aarch64 but "static-pie linked"
+          # on x86_64, which musl builds as a position-independent executable.
+          echo "$info" | grep -Eq "statically linked|static-pie linked"
           "$binary" --version
