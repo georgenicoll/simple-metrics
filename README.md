@@ -4,14 +4,97 @@ A small, efficient metrics collector for a single Linux machine.
 
 It samples a fixed set of variables at a regular interval, keeps only the most
 recent records in memory (older ones are discarded as new ones arrive), and
-serves them over a Unix socket. Nothing is written to disk.
+serves them over a Unix socket as JSON. Nothing is written to disk, and no
+root is needed: everything it reads is world-readable under `/proc` and `/sys`.
 
-Written in Rust with no dependencies beyond the standard library, and built as
-a single static binary, so it is cheap to run on something like a Raspberry Pi
-and has nothing to install alongside it.
+Written in Rust with a single dependency (`serde_json`, for the protocol), and
+built as a static binary of about 600 KB, so it is cheap to run on something
+like a Raspberry Pi and has nothing to install alongside it.
 
-> **Status:** early. The project scaffolding, the bounded in-memory store and
-> the command line are in place. Sampling and the socket API are next.
+## What it measures
+
+Every record holds the same set of values, taken together:
+
+| Metric | Unit | Source |
+|---|---|---|
+| `cpu_percent` | % | `/proc/stat` (change since the last sample) |
+| `load1` | | `/proc/loadavg` (1-minute load average) |
+| `mem_used_bytes` | bytes | `/proc/meminfo` (`MemTotal - MemAvailable`, so reclaimable cache doesn't count as used) |
+| `swap_used_bytes` | bytes | `/proc/meminfo` |
+| `cpu_temp_celsius` | °C | `/sys/class/thermal/thermal_zone0/temp` |
+| `net_<iface>_rx_bytes_per_sec` | bytes/s | `/proc/net/dev` (change since the last sample) |
+| `net_<iface>_tx_bytes_per_sec` | bytes/s | `/proc/net/dev` |
+
+The network interfaces are `eth0`, `wlan0`, `wlan1`, `br-ap` and `wg0` unless
+you say otherwise. A value that can't be worked out (an interface that isn't
+there, a counter that was reset, the first sample's rates, a file that can't be
+read) is a **gap**: `null` in the JSON, never a misleading zero.
+
+## Memory
+
+Room for every record is allocated once, when it starts, and never grows. The
+default is one sample every 5 seconds for 7 days, which is 120,960 records of
+15 values plus a timestamp: about **15 MB**. (Measured: 14.5 MB resident when
+full, 0.4 MB when empty.) A full read of the whole history streams out as
+about 11 MB of JSON in around 100 ms.
+
+## Running it
+
+```bash
+simple-metrics --socket /run/simple-metrics/simple-metrics.sock
+```
+
+| Option | Default | |
+|---|---|---|
+| `--socket <PATH>` | `/run/simple-metrics/simple-metrics.sock` | Where to listen. |
+| `--socket-mode <MODE>` | `660` | The socket's permissions, in octal. The default lets the owner and group connect, and no one else. |
+| `--interval <TIME>` | `5s` | How often to sample. |
+| `--retention <TIME>` | `7d` | How much history to keep. The number of records is this divided by the interval. |
+| `--interface <NAME>` | `eth0 wlan0 wlan1 br-ap wg0` | A network interface to report on. Repeat for several; giving any replaces the defaults. |
+| `--root <DIR>` | `/` | Read `proc/` and `sys/` under this directory. For testing. |
+
+A `TIME` is a whole number with an optional unit (`ms`, `s`, `m`, `h`, `d`;
+seconds if none): `500ms`, `5s`, `90m`, `7d`. Settings that would need more
+than 1 GiB for the store are refused.
+
+It logs to standard error (so, to the journal under systemd), and exits with
+an error if the socket can't be set up. It replaces a stale socket left by an
+earlier run, but refuses to replace a live one, or anything that isn't a
+socket. It needs no signal handling: stopping it (`SIGTERM`) just ends it.
+
+This repository only builds the binary. Installing it and running it as a
+service is up to whoever deploys it.
+
+## The socket protocol
+
+JSON lines: send one JSON object per line, get exactly one line of JSON back
+for each. A connection can carry any number of requests. Every response has
+`"ok"` and `"v"` (the protocol version, currently `1`); a failure is
+`{"ok":false,"v":1,"error":"..."}`. A request may include `"v"` to insist on a
+version. Fields the server doesn't know are ignored, so later versions can add
+to a request without breaking older clients.
+
+```console
+$ echo '{"op":"info"}' | socat - UNIX-CONNECT:/run/simple-metrics/simple-metrics.sock
+{"capacity":120960,"interval_ms":5000,"len":42,"metrics":15,"ok":true,"v":1,"version":"0.1.0"}
+```
+
+| `op` | Response fields |
+|---|---|
+| `info` | `version`, `interval_ms`, `capacity`, `len` (records held now), `metrics` (a count) |
+| `metrics` | `metrics`: a list of `{name, label, unit}`, in record order |
+| `latest` | `timestamp` (milliseconds since the Unix epoch, or `null` if nothing is recorded yet) and `values`: `{name: number or null}` |
+| `read` | `timestamps` (oldest first) and `series`: `{name: [number or null, ...]}`, each the same length as `timestamps` |
+
+The `read` response is column-oriented, which is the shape a chart wants.
+
+Limits: a request line may be at most 64 KiB; at most 16 connections are
+served at once (a 17th is told "too many connections" and closed); a
+connection silent for 30 seconds is closed. Timestamps are strictly
+increasing even if the system clock steps backwards.
+
+Not built yet: asking for a time range, a subset of the metrics, or a
+downsampled result. See [TODO.md](TODO.md).
 
 ## Building
 
@@ -44,10 +127,16 @@ cargo test
 
 | Path | Purpose |
 |---|---|
-| `src/store.rs` | `RingBuffer<T>`: fixed capacity, drops the oldest item when full |
-| `src/cli.rs` | Argument handling, kept apart from `main` so it can be unit tested |
+| `src/config.rs`, `src/cli.rs` | The command line: options, defaults and validation |
+| `src/proc.rs` | Reading and parsing `/proc` and `/sys` files |
+| `src/sampler.rs` | Turning successive readings into rows, including rates |
+| `src/metrics.rs` | The list of metrics every record holds |
+| `src/store.rs` | The bounded in-memory store: one preallocated buffer, oldest record discarded when full |
+| `src/protocol.rs`, `src/server.rs` | The JSON-lines protocol and the connection handling |
+| `src/daemon.rs` | Putting it together: the sampler thread, the socket, startup checks |
 | `src/main.rs` | A thin wrapper around the library |
-| `tests/` | Integration tests that run the real binary |
+| `tests/daemon.rs` | End to end: runs the real binary on a real socket |
+| `tests/fixtures/root/` | Real `/proc` and `/sys` files captured from a Raspberry Pi 5, used by the tests |
 
 Lint rules live in `Cargo.toml` (`[lints]`) and `clippy.toml`: `unsafe` is
 forbidden, and `unwrap`/`expect`/`panic` are warned about outside tests, since
