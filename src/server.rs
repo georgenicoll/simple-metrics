@@ -117,7 +117,7 @@ pub fn handle_connection<R: BufRead, W: Write>(
             continue;
         }
         match parse_request(text) {
-            Ok(request) => respond(&mut writer, request, shared)?,
+            Ok(request) => respond(&mut writer, &request, shared)?,
             Err(error) => respond_error(&mut writer, &error.to_string())?,
         }
     }

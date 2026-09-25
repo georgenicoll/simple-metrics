@@ -36,7 +36,8 @@ Room for every record is allocated once, when it starts, and never grows. The
 default is one sample every 5 seconds for 7 days, which is 120,960 records of
 15 values plus a timestamp: about **15 MB**. (Measured: 14.5 MB resident when
 full, 0.4 MB when empty.) A full read of the whole history streams out as
-about 11 MB of JSON in around 100 ms.
+about 11 MB of JSON in around 100 ms; ask for a subset, a range or a
+downsampled result (see below) to get far less.
 
 ## Running it
 
@@ -84,17 +85,43 @@ $ echo '{"op":"info"}' | socat - UNIX-CONNECT:/run/simple-metrics/simple-metrics
 | `info` | `version`, `interval_ms`, `capacity`, `len` (records held now), `metrics` (a count) |
 | `metrics` | `metrics`: a list of `{name, label, unit}`, in record order |
 | `latest` | `timestamp` (milliseconds since the Unix epoch, or `null` if nothing is recorded yet) and `values`: `{name: number or null}` |
-| `read` | `timestamps` (oldest first) and `series`: `{name: [number or null, ...]}`, each the same length as `timestamps` |
+| `read` | Records: `timestamps` (oldest first) and `series`: `{name: [number or null, ...]}`, each the same length as `timestamps`. See below. |
 
-The `read` response is column-oriented, which is the shape a chart wants.
+The `read` response is column-oriented, which is the shape a chart wants. With
+nothing else in the request it returns every record. These optional fields
+narrow and summarise it:
+
+| Field | Meaning |
+|---|---|
+| `from`, `to` | Only records from `from` to `to`, **both inclusive**, in milliseconds since the Unix epoch. Either may be left out. A range with no records is an empty result, not an error. |
+| `metrics` | Only these metrics, by name (from the `metrics` op). `series` then holds just these. An unknown name is an error. |
+| `step_ms` | Group the records into buckets this many milliseconds wide, and return the **mean** of each metric per bucket. |
+| `max_points` | The same, but the server picks the bucket width so that there are at most this many buckets (2 to 200,000). The width is a whole number of samples. |
+| `extremes` | With `step_ms` or `max_points`: also return the smallest and largest value per bucket, as `min` and `max`, laid out like `series`. Lets a chart show spikes that averaging would hide. |
+
+`step_ms` and `max_points` can't be combined. A downsampled response also has
+`step_ms`, the width used, and its `timestamps` are the buckets' **start**
+times. Buckets are aligned to multiples of the width since the Unix epoch, not
+to the query, so asking again for a later window gives the same edges. Every
+bucket from the first record's to the last's is present: a stretch with no
+records, or no usable values, is `null` in each series.
+
+```console
+$ echo '{"op":"read","metrics":["cpu_percent"],"from":1790380000000,"max_points":60,"extremes":true}' \
+    | socat - UNIX-CONNECT:/run/simple-metrics/simple-metrics.sock
+{"max":{"cpu_percent":[...]},"min":{"cpu_percent":[...]},"ok":true,"series":{"cpu_percent":[...]},"step_ms":60000,"timestamps":[...],"v":1}
+```
+
+Downsampling is cheap: over a full 7 days (120,960 records), one metric down to
+600 points takes under a millisecond, and all fifteen about 2 ms, so the store
+is locked for a negligible time. (`cargo test --release -- --ignored --nocapture`
+repeats the timing.) A query that would need more than 200,000 buckets is
+refused, with a hint to use a wider `step_ms` or a `max_points`.
 
 Limits: a request line may be at most 64 KiB; at most 16 connections are
 served at once (a 17th is told "too many connections" and closed); a
 connection silent for 30 seconds is closed. Timestamps are strictly
 increasing even if the system clock steps backwards.
-
-Not built yet: asking for a time range, a subset of the metrics, or a
-downsampled result. See [TODO.md](TODO.md).
 
 ## Building
 
