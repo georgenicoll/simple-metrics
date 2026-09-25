@@ -1,0 +1,47 @@
+[package]
+name = "simple-metrics"
+version = "0.1.0"
+edition = "2024"
+# The oldest compiler this builds with (edition 2024 needs 1.85). CI checks it.
+rust-version = "1.85"
+description = "A small in-memory metrics collector with a Unix-socket API"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/georgenicoll/simple-metrics"
+keywords = ["metrics", "monitoring", "linux", "daemon"]
+categories = ["command-line-utilities"]
+# Keep the published crate (and `cargo package`) to just what's needed.
+include = ["/src", "/tests", "/README.md", "/LICENSE"]
+
+[dependencies]
+# None yet, on purpose: the standard library covers threads, Unix sockets and
+# the ring buffer, which keeps the binary small and the audit surface empty.
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+# The `priority` keeps the group at the lowest precedence, so individual lints
+# below (and `#[allow]`s in code) can still override it.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Panicking on bad input is a bug in a daemon that is meant to run for weeks.
+# Tests are exempt (see clippy.toml).
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# A metrics daemon under systemd is restarted on failure: unwinding buys nothing
+# and costs binary size.
+panic = "abort"
+strip = true

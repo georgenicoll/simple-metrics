@@ -1,0 +1,9 @@
+# Tells rustup which toolchain to use here, so a fresh checkout builds with the
+# same compiler, lints and formatter as CI without any setup.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
+# The static binary the Pi runs (the Pi is aarch64; musl means no glibc
+# version to match).
+targets = ["aarch64-unknown-linux-musl"]
+profile = "minimal"
