@@ -14,8 +14,10 @@ categories = ["command-line-utilities"]
 include = ["/src", "/tests", "/README.md", "/LICENSE"]
 
 [dependencies]
-# None yet, on purpose: the standard library covers threads, Unix sockets and
-# the ring buffer, which keeps the binary small and the audit surface empty.
+# The only dependency, and only for the socket protocol's JSON. Everything else
+# (threads, Unix sockets, the store) is the standard library, which keeps the
+# binary small and the audit surface short.
+serde_json = "1"
 
 [lints.rust]
 unsafe_code = "forbid"
