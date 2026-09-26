@@ -11,6 +11,8 @@
 #   SM_INTERVAL   sampling interval (default 1s, so charts fill quickly;
 #                 the deployed daemon uses 5s)
 #   SM_RETENTION  how much history to keep (default 1d)
+#   SM_STATE_DIR  also keep the history in this directory, so it survives
+#                 restarts (default: memory only)
 # Anything else on the command line is passed to simple-metrics, e.g.
 #   ./run_local.sh --interface eth0
 set -euo pipefail
@@ -27,4 +29,5 @@ exec target/release/simple-metrics \
   --socket "$SOCKET" \
   --interval "${SM_INTERVAL:-1s}" \
   --retention "${SM_RETENTION:-1d}" \
+  ${SM_STATE_DIR:+--state-dir "$SM_STATE_DIR"} \
   "$@"

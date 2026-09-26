@@ -2,7 +2,8 @@
 //!
 //! The daemon samples a fixed set of variables at a regular interval, keeps
 //! only the most recent records in memory (older ones are discarded as new
-//! ones arrive) and serves them over a Unix socket. Nothing is persisted.
+//! ones arrive) and serves them over a Unix socket. Optionally (`--state-dir`)
+//! the history is also kept on disk, so it survives a restart.
 //!
 //! The library holds the logic so that it can be tested without starting a
 //! process; `main.rs` is a thin wrapper around it.
@@ -11,6 +12,7 @@
 //! - [`proc`]: reading and parsing `/proc` and `/sys`.
 //! - [`sampler`]: turning successive readings into rows of values.
 //! - [`store`]: the bounded in-memory store of those rows.
+//! - [`persist`]: the optional history file.
 //! - [`protocol`] and [`server`]: the JSON-lines socket API.
 //! - [`daemon`]: putting it together.
 //! - [`query`]: the `smq` command-line client.
@@ -24,6 +26,7 @@ pub mod cli;
 pub mod config;
 pub mod daemon;
 pub mod metrics;
+pub mod persist;
 pub mod proc;
 pub mod protocol;
 pub mod query;
