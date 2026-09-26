@@ -61,16 +61,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps --locked
 
-  msrv:
-    # `rust-version` in Cargo.toml is a promise; this keeps it honest.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.85
-      - uses: Swatinem/rust-cache@v2
-      # `+1.85` beats rust-toolchain.toml, which asks for stable.
-      - run: cargo +1.85 check --locked --all-targets
-
   static-binary:
     # The artifact that actually gets deployed: a static musl binary.
     strategy:

@@ -207,10 +207,10 @@ fn parse_read(object: &Map<String, Value>) -> Result<ReadParams, RequestError> {
     const MILLIS: &str = "must be a whole number of milliseconds since the Unix epoch";
     let from = optional_u64(object, "from", MILLIS)?;
     let to = optional_u64(object, "to", MILLIS)?;
-    if let (Some(from), Some(to)) = (from, to) {
-        if from > to {
-            return Err(invalid("from", "must not be after \"to\""));
-        }
+    if let (Some(from), Some(to)) = (from, to)
+        && from > to
+    {
+        return Err(invalid("from", "must not be after \"to\""));
     }
 
     let metrics = match object.get("metrics") {
