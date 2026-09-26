@@ -126,7 +126,9 @@ fn bucket_count(first: u64, last: u64, step: u64) -> u64 {
 /// values. When it is full, adding a record discards the oldest.
 ///
 /// Memory use is bounded and known up front: room for `capacity` records is
-/// allocated once and never grows. See [`Store::bytes_for`].
+/// allocated once and never grows, and is all touched when the store is
+/// created, so the whole of it is really in use from the start rather than
+/// only as the store fills. See [`Store::bytes_for`].
 ///
 /// ```
 /// use std::num::NonZeroUsize;
@@ -171,10 +173,15 @@ impl Store {
         Some(Self {
             width,
             capacity,
-            // Zeroed memory comes from the OS lazily, so the real footprint
-            // grows as the store fills rather than all at once at startup.
-            timestamps: vec![0; capacity.get()],
-            values: vec![0.0; cells],
+            // Not zeros: the OS hands out zeroed memory lazily, page by page as
+            // it is first written, so a zeroed buffer would only become real
+            // memory as the store filled (over days). Filling with anything
+            // else writes every page now, so the memory is really taken at
+            // startup - a shortage shows then (or as a clean failure under a
+            // memory limit), not a week in. `NaN` and `MAX` are never read
+            // before a record is written over them.
+            timestamps: vec![u64::MAX; capacity.get()],
+            values: vec![f64::NAN; cells],
             head: 0,
             len: 0,
         })
@@ -214,6 +221,14 @@ impl Store {
         self.timestamps[slot] = timestamp;
         self.values[slot * self.width..(slot + 1) * self.width].copy_from_slice(row);
         Ok(())
+    }
+
+    /// Every record held, oldest first: its timestamp and values.
+    pub fn records(&self) -> impl Iterator<Item = (u64, &[f64])> + '_ {
+        (0..self.len).map(|i| {
+            let slot = self.slot(i);
+            (self.timestamps[slot], self.row(slot))
+        })
     }
 
     /// The newest record's timestamp and values.

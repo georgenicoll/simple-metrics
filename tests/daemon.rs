@@ -635,3 +635,230 @@ fn bad_read_options_are_refused_and_the_connection_survives() {
     }
     assert_eq!(client.ask(r#"{"op":"info"}"#)["ok"], true);
 }
+
+// ---- keeping the history on disk (--state-dir) -------------------------------
+
+use simple_metrics::metrics::Schema;
+use simple_metrics::persist;
+use simple_metrics::store::Store;
+
+/// A state directory of its own, removed when dropped.
+struct StateDir(PathBuf);
+
+impl StateDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("sm-state-{}-{name}", std::process::id()));
+        fs::remove_dir_all(&dir).ok();
+        Self(dir)
+    }
+
+    fn arg(&self) -> String {
+        self.0.to_str().unwrap().to_owned()
+    }
+
+    fn file(&self) -> PathBuf {
+        self.0.join(persist::FILE_NAME)
+    }
+
+    /// How many complete records the history file holds now.
+    fn records_on_disk(&self, width: usize) -> usize {
+        let length = fs::metadata(self.file()).map_or(0, |m| usize::try_from(m.len()).unwrap());
+        length.saturating_sub(20) / (8 + 8 * width + 4)
+    }
+}
+
+impl Drop for StateDir {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+fn info_len(daemon: &Daemon) -> u64 {
+    daemon.ask(&json!({"op": "info"}))["len"].as_u64().unwrap()
+}
+
+#[test]
+fn history_survives_a_kill_and_a_restart() {
+    let state = StateDir::new("kill");
+    let width = 15;
+    let first = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "200ms"]);
+    first.wait_for_records(8);
+    wait_until(|| state.records_on_disk(width) >= 8, "records on disk");
+    let before = timestamps(&first);
+    drop(first); // SIGKILL: no chance to save anything on the way out
+
+    let second = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "200ms"]);
+    let after = timestamps(&second);
+    assert!(
+        after.len() >= before.len().min(8),
+        "the old records should be there straight away: {} then {}",
+        before.len(),
+        after.len()
+    );
+    assert_eq!(after[0], before[0], "the oldest record is the same one");
+    assert!(
+        after.windows(2).all(|w| w[0] < w[1]),
+        "old and new records stay in time order"
+    );
+}
+
+#[test]
+fn without_a_state_directory_nothing_is_kept() {
+    let first = Daemon::start(&[]);
+    first.wait_for_records(3);
+    drop(first);
+    let second = Daemon::start(&[]);
+    // Fresh: it has taken at most a few samples since starting.
+    assert!(info_len(&second) < 3);
+}
+
+#[test]
+fn the_history_file_is_private_and_stays_within_about_twice_the_capacity() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = StateDir::new("size");
+    // 2 s at 50 ms is a capacity of 40 records: the file is rewritten once it
+    // passes 80.
+    let daemon = Daemon::start(&[
+        "--state-dir",
+        &state.arg(),
+        "--interval",
+        "50ms",
+        "--retention",
+        "2s",
+        "--flush-interval",
+        "100ms",
+    ]);
+    let mut largest = 0;
+    let watching = Instant::now();
+    while watching.elapsed() < Duration::from_secs(6) {
+        largest = largest.max(state.records_on_disk(15));
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(largest > 40, "it should grow past the capacity: {largest}");
+    assert!(
+        largest <= 84,
+        "then be rewritten, not grow for ever: {largest}"
+    );
+    assert!(state.records_on_disk(15) >= 40);
+    assert_eq!(info_len(&daemon), 40);
+    assert_eq!(
+        fs::metadata(state.file()).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!state.file().with_extension("bin.tmp").exists());
+}
+
+#[test]
+fn history_recorded_for_other_interfaces_is_ignored_not_misread() {
+    let state = StateDir::new("schema");
+    let first = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "100ms"]);
+    first.wait_for_records(5);
+    wait_until(|| state.records_on_disk(15) >= 5, "records on disk");
+    drop(first);
+    let second = Daemon::start(&[
+        "--state-dir",
+        &state.arg(),
+        "--interface",
+        "eth0",
+        "--flush-interval",
+        "100ms",
+    ]);
+    let metrics = second.ask(&json!({"op": "info"}))["metrics"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(metrics, 7);
+    // Every record it has is one of its own (7 values), none misread.
+    let read = second.ask(&json!({"op": "read"}));
+    assert!(
+        read["series"].as_object().unwrap().values().all(|v| {
+            v.as_array().unwrap().len() == read["timestamps"].as_array().unwrap().len()
+        })
+    );
+}
+
+#[test]
+fn a_damaged_end_of_the_file_costs_only_the_damage() {
+    let state = StateDir::new("torn");
+    let first = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "100ms"]);
+    first.wait_for_records(6);
+    wait_until(|| state.records_on_disk(15) >= 6, "records on disk");
+    drop(first);
+    let length = fs::metadata(state.file()).unwrap().len();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(state.file())
+        .unwrap()
+        .set_len(length - 7)
+        .unwrap();
+    let second = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "100ms"]);
+    assert!(info_len(&second) >= 5);
+}
+
+#[test]
+fn a_clock_behind_the_saved_history_holds_recording_back() {
+    let state = StateDir::new("clock");
+    fs::create_dir_all(&state.0).unwrap();
+    // A saved history whose newest record is an hour in the future.
+    let schema = Schema::new(&["eth0", "wlan0", "wlan1", "br-ap", "wg0"].map(ToOwned::to_owned));
+    let mut store = Store::new(std::num::NonZeroUsize::new(100).unwrap(), schema.len()).unwrap();
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let future = now + 3_600_000;
+    for n in 0..5 {
+        store
+            .push(future - 4000 + n * 1000, &vec![1.0; schema.len()])
+            .unwrap();
+    }
+    persist::Journal::start(
+        state.file(),
+        persist::schema_hash(&schema),
+        &store,
+        Duration::from_secs(60),
+    )
+    .unwrap();
+
+    let daemon = Daemon::start(&["--state-dir", &state.arg()]);
+    thread::sleep(Duration::from_millis(700)); // several 100 ms samples
+    assert_eq!(
+        info_len(&daemon),
+        5,
+        "nothing new while the clock is behind"
+    );
+    assert_eq!(timestamps(&daemon).last().copied(), Some(future));
+}
+
+// ---- memory is really taken at startup ---------------------------------------
+
+/// The daemon's resident memory, in bytes.
+fn resident_bytes(daemon: &Daemon) -> usize {
+    let status = fs::read_to_string(format!("/proc/{}/status", daemon.child.id())).unwrap();
+    let kib: usize = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    kib * 1024
+}
+
+#[test]
+fn the_whole_store_is_resident_from_the_start() {
+    // 100,000 records of 15 values and a timestamp: 12.8 MB, and it has taken
+    // no samples worth speaking of yet (one a second).
+    let daemon = Daemon::start(&["--interval", "1s", "--retention", "100000s"]);
+    assert!(info_len(&daemon) <= 2);
+    let expected = 100_000 * 16 * 8;
+    let resident = resident_bytes(&daemon);
+    assert!(
+        resident >= expected * 9 / 10,
+        "only {resident} bytes resident of {expected}"
+    );
+}

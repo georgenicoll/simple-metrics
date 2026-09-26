@@ -18,6 +18,8 @@ pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
 pub const DEFAULT_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// The network interfaces to report on unless told otherwise.
 pub const DEFAULT_INTERFACES: [&str; 5] = ["eth0", "wlan0", "wlan1", "br-ap", "wg0"];
+/// How often new records are written to the history file, if there is one.
+pub const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 /// The most memory the store may be sized to use. A guard against a typo such
 /// as `--retention 7000d`, not a target.
 pub const MAX_STORE_BYTES: usize = 1 << 30;
@@ -28,7 +30,7 @@ Usage: simple-metrics [OPTIONS]
 
 Samples this machine's CPU, memory, temperature and network use at a regular
 interval, keeps the most recent records in memory, and serves them over a
-Unix socket. Nothing is written to disk.
+Unix socket. Nothing is written to disk unless --state-dir is given.
 
 Options:
       --socket <PATH>       Unix socket to listen on
@@ -39,6 +41,13 @@ Options:
       --interface <NAME>    A network interface to report on. Repeat for
                             several; giving any replaces the defaults
                             [default: eth0 wlan0 wlan1 br-ap wg0]
+      --state-dir <DIR>     Keep the history in DIR too, so it survives a
+                            restart or reboot (created if need be; the file
+                            is history.bin, readable only by this user)
+                            [default: none: memory only]
+      --flush-interval <TIME>
+                            How often new records are written there
+                            [default: 1m]
       --root <DIR>          Read /proc and /sys under DIR (for testing)
                             [default: /]
   -h, --help                Print this help and exit
@@ -58,8 +67,14 @@ pub struct Config {
     pub socket_mode: u32,
     /// The time between samples.
     pub interval: Duration,
+    /// How much history is kept.
+    pub retention: Duration,
     /// How many records the store holds: the retention divided by the interval.
     pub capacity: NonZeroUsize,
+    /// Where to keep the history on disk as well, if anywhere.
+    pub state_dir: Option<PathBuf>,
+    /// How often new records are written to the history file.
+    pub flush_interval: Duration,
     /// The network interfaces to report on, in order.
     pub interfaces: Vec<String>,
     /// The directory `proc/` and `sys/` are read from.
@@ -137,6 +152,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
     let mut retention = DEFAULT_RETENTION;
     let mut interfaces: Vec<String> = Vec::new();
     let mut root = PathBuf::from("/");
+    let mut state_dir = None;
+    let mut flush_interval = DEFAULT_FLUSH_INTERVAL;
 
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -186,6 +203,11 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
                 }
                 interfaces.push(name);
             }
+            "--state-dir" => state_dir = Some(PathBuf::from(value(flag)?)),
+            "--flush-interval" => {
+                let text = value(flag)?;
+                flush_interval = parse_duration(&text).map_err(|reason| invalid(&text, reason))?;
+            }
             "--root" => root = PathBuf::from(value(flag)?),
             _ => return Err(ConfigError::UnknownArgument(arg.clone())),
         }
@@ -199,7 +221,10 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
         socket,
         socket_mode,
         interval,
+        retention,
         capacity,
+        state_dir,
+        flush_interval,
         interfaces,
         root,
     }))
@@ -283,6 +308,25 @@ mod tests {
         assert_eq!(config.capacity.get(), 120_960);
         assert_eq!(config.interfaces, DEFAULT_INTERFACES);
         assert_eq!(config.root, PathBuf::from("/"));
+        assert_eq!(config.retention, DEFAULT_RETENTION);
+        assert_eq!(config.state_dir, None, "memory only unless asked");
+        assert_eq!(config.flush_interval, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_state_directory_and_flush_interval_can_be_given() {
+        let config = config(&["--state-dir", "/var/lib/x", "--flush-interval", "30s"]);
+        assert_eq!(config.state_dir, Some(PathBuf::from("/var/lib/x")));
+        assert_eq!(config.flush_interval, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_bad_flush_interval_names_the_option() {
+        assert_eq!(
+            invalid_flag(&["--flush-interval", "soon"]),
+            "--flush-interval"
+        );
+        assert_eq!(invalid_flag(&["--flush-interval", "0"]), "--flush-interval");
     }
 
     #[test]

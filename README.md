@@ -4,8 +4,9 @@ A small, efficient metrics collector for a single Linux machine.
 
 It samples a fixed set of variables at a regular interval, keeps only the most
 recent records in memory (older ones are discarded as new ones arrive), and
-serves them over a Unix socket as JSON. Nothing is written to disk, and no
-root is needed: everything it reads is world-readable under `/proc` and `/sys`.
+serves them over a Unix socket as JSON. By default nothing is written to disk;
+with `--state-dir` the history is also kept in a file, so it survives a restart
+or a reboot. No root is needed: everything it reads is world-readable under `/proc` and `/sys`.
 
 Written in Rust with a single dependency (`serde_json`, for the protocol), and
 built as a static binary of about 600 KB, so it is cheap to run on something
@@ -57,10 +58,12 @@ and group only.
 
 ## Memory
 
-Room for every record is allocated once, when it starts, and never grows. The
-default is one sample every 5 seconds for 7 days, which is 120,960 records of
-15 values plus a timestamp: about **15 MB**. (Measured: 14.5 MB resident when
-full, 0.4 MB when empty.) A full read of the whole history streams out as
+Room for every record is allocated once, when it starts, and never grows, and
+all of it is touched at startup so it is really taken then, not gradually over
+days as it fills (a shortage shows immediately). The default is one sample
+every 5 seconds for 7 days, which is 120,960 records of 15 values plus a
+timestamp: about **15 MB**. (Measured: 16.9 MB resident from the first second,
+whether the history is empty or full.) A full read of the whole history streams out as
 about 11 MB of JSON in around 100 ms; ask for a subset, a range or a
 downsampled result (see below) to get far less.
 
@@ -77,11 +80,48 @@ simple-metrics --socket /run/simple-metrics/simple-metrics.sock
 | `--interval <TIME>` | `5s` | How often to sample. |
 | `--retention <TIME>` | `7d` | How much history to keep. The number of records is this divided by the interval. |
 | `--interface <NAME>` | `eth0 wlan0 wlan1 br-ap wg0` | A network interface to report on. Repeat for several; giving any replaces the defaults. |
+| `--state-dir <DIR>` | none | Also keep the history in `DIR/history.bin`, so it survives restarts and reboots. See "Keeping the history". Created if need be. |
+| `--flush-interval <TIME>` | `1m` | How often new records are written to that file. |
 | `--root <DIR>` | `/` | Read `proc/` and `sys/` under this directory. For testing. |
 
 A `TIME` is a whole number with an optional unit (`ms`, `s`, `m`, `h`, `d`;
 seconds if none): `500ms`, `5s`, `90m`, `7d`. Settings that would need more
 than 1 GiB for the store are refused.
+
+## Keeping the history
+
+Without `--state-dir` the history is memory only and starts empty on every run.
+With it, the history is also written to `history.bin` in that directory
+(created if need be; the file is readable by its owner only) and loaded again
+at startup, so a restart, an upgrade or a reboot leaves a gap in the charts
+for as long as the daemon was down, not an empty history.
+
+- **Gentle on an SD card.** The file is an append-only log of fixed-size
+  records. New records are collected and appended in one small write every
+  `--flush-interval` (about 2 MB a day at the defaults), never the whole
+  history rewritten. When the file has grown to twice the store's capacity
+  (about every 7 days at the defaults) it is rewritten from memory to a
+  temporary file and renamed over the old one, so a complete file always
+  exists.
+- **Nothing to do at shutdown.** A power cut or a crash loses at most the last
+  flush interval's records. Each record has a checksum, so a torn or damaged
+  end of the file costs only the damaged records; the rest load, and the file
+  is repaired.
+- **Safe to change settings.** The file records the metrics it holds. If the
+  set changes (different `--interface`s), it is ignored and started afresh,
+  never misread. A different `--interval` or `--retention` is fine: only the
+  newest records that fit are loaded, and any older than the retention are
+  dropped.
+- **A clock that hasn't been set.** A Pi has no battery clock, so after a reboot
+  its clock can be behind the newest saved record until it reaches the
+  network. Records must stay in time order, so the daemon holds back new
+  samples while the clock is behind the saved history (for up to 15 minutes),
+  and logs it, rather than record wrong timestamps. The clock is normally
+  right within seconds, so that is a short extra gap.
+- **If writing fails** (disk full, say) it logs once and keeps trying; the
+  history in memory carries on unaffected.
+- The directory has to be writable by the daemon and is checked at startup: a
+  directory it can't use is an error, not a silent loss of history.
 
 It logs to standard error (so, to the journal under systemd), and exits with
 an error if the socket can't be set up. It replaces a stale socket left by an
@@ -184,13 +224,14 @@ cargo test
 | `src/proc.rs` | Reading and parsing `/proc` and `/sys` files |
 | `src/sampler.rs` | Turning successive readings into rows, including rates |
 | `src/metrics.rs` | The list of metrics every record holds |
+| `src/persist.rs` | The history file: loading it, appending to it, rewriting it |
 | `src/store.rs` | The bounded in-memory store: one preallocated buffer, oldest record discarded when full |
 | `src/protocol.rs`, `src/server.rs` | The JSON-lines protocol and the connection handling |
 | `src/daemon.rs` | Putting it together: the sampler thread, the socket, startup checks |
 | `src/query.rs`, `src/bin/smq.rs` | The `smq` client: arguments, the request, printing the answer |
 | `src/main.rs` | A thin wrapper around the library |
 | `run_local.sh` | Builds and runs the daemon in the foreground for development (used with `smq --local`) |
-| `tests/daemon.rs` | End to end: runs the real binary on a real socket |
+| `tests/daemon.rs` | End to end: runs the real binary on a real socket, including kill-and-restart with a state directory |
 | `tests/smq.rs` | End to end: runs the real `smq` against the real daemon |
 | `tests/fixtures/root/` | Real `/proc` and `/sys` files captured from a Raspberry Pi 5, used by the tests |
 
