@@ -189,6 +189,7 @@ cargo test
 | `src/daemon.rs` | Putting it together: the sampler thread, the socket, startup checks |
 | `src/query.rs`, `src/bin/smq.rs` | The `smq` client: arguments, the request, printing the answer |
 | `src/main.rs` | A thin wrapper around the library |
+| `run_local.sh` | Builds and runs the daemon in the foreground for development (used with `smq --local`) |
 | `tests/daemon.rs` | End to end: runs the real binary on a real socket |
 | `tests/smq.rs` | End to end: runs the real `smq` against the real daemon |
 | `tests/fixtures/root/` | Real `/proc` and `/sys` files captured from a Raspberry Pi 5, used by the tests |
