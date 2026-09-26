@@ -89,12 +89,14 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: Check it is statically linked and runs
+      - name: Check they are statically linked and run
         run: |
-          binary=target/${{ matrix.target }}/release/simple-metrics
-          info=$(file "$binary")
-          echo "$info"
-          # `file` says "statically linked" on aarch64 but "static-pie linked"
-          # on x86_64, which musl builds as a position-independent executable.
-          echo "$info" | grep -Eq "statically linked|static-pie linked"
-          "$binary" --version
+          for name in simple-metrics smq; do
+            binary=target/${{ matrix.target }}/release/$name
+            info=$(file "$binary")
+            echo "$info"
+            # `file` says "statically linked" on aarch64 but "static-pie linked"
+            # on x86_64, which musl builds as a position-independent executable.
+            echo "$info" | grep -Eq "statically linked|static-pie linked"
+            "$binary" --version
+          done

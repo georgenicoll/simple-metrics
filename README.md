@@ -30,6 +30,31 @@ you say otherwise. A value that can't be worked out (an interface that isn't
 there, a counter that was reset, the first sample's rates, a file that can't be
 read) is a **gap**: `null` in the JSON, never a misleading zero.
 
+## Querying it: `smq`
+
+`smq` is a small command-line client, built alongside the daemon and shipped in
+the same release archive. It sends one query and prints the answer as a table
+(or, with `--json`, as the JSON the daemon sent).
+
+```console
+$ smq info
+$ smq metrics
+$ smq latest
+$ smq read --metric cpu_percent --from 1h --points 60 --extremes
+$ smq raw '{"op":"read","metrics":["load1"],"from":1790380000000}'
+```
+
+By default it uses the daemon's default socket,
+`/run/simple-metrics/simple-metrics.sock`. `--local` uses
+`/tmp/simple-metrics.sock`, where `./run_local.sh` (which builds and runs the
+daemon in the foreground, sampling every second) puts it; `--socket <PATH>`
+or the `SIMPLE_METRICS_SOCKET` environment variable choose any other. A time
+for `--from` and `--to` is `now`, how long ago (`90s`, `5m`, `2h`, `7d`), or
+milliseconds since the Unix epoch. `smq --help` lists everything.
+
+It needs to be allowed to use the socket: the daemon's default is the owner
+and group only.
+
 ## Memory
 
 Room for every record is allocated once, when it starts, and never grows. The
@@ -63,8 +88,9 @@ an error if the socket can't be set up. It replaces a stale socket left by an
 earlier run, but refuses to replace a live one, or anything that isn't a
 socket. It needs no signal handling: stopping it (`SIGTERM`) just ends it.
 
-This repository only builds the binary. Installing it and running it as a
-service is up to whoever deploys it.
+This repository only builds the binaries. Installing them and running the
+daemon as a service is up to whoever deploys it. For trying it out on a
+development machine, `./run_local.sh` builds it and runs it in the foreground.
 
 ## The socket protocol
 
@@ -161,8 +187,10 @@ cargo test
 | `src/store.rs` | The bounded in-memory store: one preallocated buffer, oldest record discarded when full |
 | `src/protocol.rs`, `src/server.rs` | The JSON-lines protocol and the connection handling |
 | `src/daemon.rs` | Putting it together: the sampler thread, the socket, startup checks |
+| `src/query.rs`, `src/bin/smq.rs` | The `smq` client: arguments, the request, printing the answer |
 | `src/main.rs` | A thin wrapper around the library |
 | `tests/daemon.rs` | End to end: runs the real binary on a real socket |
+| `tests/smq.rs` | End to end: runs the real `smq` against the real daemon |
 | `tests/fixtures/root/` | Real `/proc` and `/sys` files captured from a Raspberry Pi 5, used by the tests |
 
 Lint rules live in `Cargo.toml` (`[lints]`) and `clippy.toml`: `unsafe` is
@@ -178,12 +206,12 @@ plus a check that the minimum supported Rust version (`rust-version` in
 Bump `version` in `Cargo.toml`, commit, then push a matching tag:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 The release workflow refuses a tag that doesn't match `Cargo.toml`, builds
-static `aarch64` and `x86_64` binaries, runs the tests, and publishes them as a
-GitHub release with a `SHA256SUMS` file.
+static `aarch64` and `x86_64` archives (each with `simple-metrics` and `smq`),
+runs the tests, and publishes them as a GitHub release with a `SHA256SUMS` file.
 
 ## Licence
 
