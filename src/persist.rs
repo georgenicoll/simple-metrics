@@ -153,8 +153,9 @@ pub fn load(path: &Path, hash: u64, store: &mut Store, oldest: u64) -> io::Resul
             });
         }
         let timestamp = u64::from_le_bytes(buffer[..8].try_into().unwrap_or([0; 8]));
-        for (value, bytes) in row.iter_mut().zip(buffer[8..body].chunks_exact(8)) {
-            *value = f64::from_bits(u64::from_le_bytes(bytes.try_into().unwrap_or([0; 8])));
+        let (values, _) = buffer[8..body].as_chunks::<8>();
+        for (value, bytes) in row.iter_mut().zip(values) {
+            *value = f64::from_bits(u64::from_le_bytes(*bytes));
         }
         if timestamp >= oldest && store.push(timestamp, &row).is_ok() {
             loaded += 1;

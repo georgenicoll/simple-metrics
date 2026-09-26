@@ -240,8 +240,9 @@ forbidden, and `unwrap`/`expect`/`panic` are warned about outside tests, since
 a daemon that runs for weeks should report errors rather than crash.
 
 CI (`.github/workflows/ci.yml`) runs the same checks on x86_64 and aarch64,
-plus a check that the minimum supported Rust version (`rust-version` in
-`Cargo.toml`) still builds.
+using the current stable Rust. There is no supported-older-compiler promise:
+this is built as a static binary by CI and the release workflow, not from
+source elsewhere (edition 2024 already means Rust 1.85 or newer).
 
 ## Releasing
 

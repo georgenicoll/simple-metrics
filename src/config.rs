@@ -15,7 +15,7 @@ pub const DEFAULT_SOCKET_MODE: u32 = 0o660;
 /// How often to sample unless told otherwise.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
 /// How much history to keep unless told otherwise (7 days).
-pub const DEFAULT_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub const DEFAULT_RETENTION: Duration = Duration::from_hours(168);
 /// The network interfaces to report on unless told otherwise.
 pub const DEFAULT_INTERFACES: [&str; 5] = ["eth0", "wlan0", "wlan1", "br-ap", "wg0"];
 /// How often new records are written to the history file, if there is one.

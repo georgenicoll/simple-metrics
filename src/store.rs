@@ -199,13 +199,13 @@ impl Store {
                 got: row.len(),
             });
         }
-        if let Some((newest, _)) = self.latest() {
-            if timestamp <= newest {
-                return Err(PushError::OutOfOrder {
-                    newest,
-                    got: timestamp,
-                });
-            }
+        if let Some((newest, _)) = self.latest()
+            && timestamp <= newest
+        {
+            return Err(PushError::OutOfOrder {
+                newest,
+                got: timestamp,
+            });
         }
 
         let slot = if self.len < self.capacity.get() {

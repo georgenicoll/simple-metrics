@@ -234,7 +234,7 @@ const PLAUSIBLE_CLOCK_MS: u64 = 1_704_067_200_000;
 /// for a clock that steps back while running) bumped to just after the
 /// newest, giving a run of wrong timestamps. Better a short gap, on the
 /// assumption that the clock is about to be set right.
-const CLOCK_GRACE: Duration = Duration::from_secs(15 * 60);
+const CLOCK_GRACE: Duration = Duration::from_mins(15);
 
 /// Takes a sample now and then every `interval`, for ever.
 fn sample_forever(shared: &Shared, mut plan: SamplingPlan) -> ! {
