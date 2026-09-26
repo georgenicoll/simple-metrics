@@ -226,7 +226,7 @@ fn capacity_for(
 
 /// Parses a duration such as `500ms`, `5s`, `90m`, `12h` or `7d`. A bare
 /// number is seconds. Whole numbers only, and never zero.
-fn parse_duration(text: &str) -> Result<Duration, &'static str> {
+pub(crate) fn parse_duration(text: &str) -> Result<Duration, &'static str> {
     let digits_end = text
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(text.len());

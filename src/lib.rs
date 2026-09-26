@@ -13,6 +13,7 @@
 //! - [`store`]: the bounded in-memory store of those rows.
 //! - [`protocol`] and [`server`]: the JSON-lines socket API.
 //! - [`daemon`]: putting it together.
+//! - [`query`]: the `smq` command-line client.
 
 #![forbid(unsafe_code)]
 
@@ -25,6 +26,7 @@ pub mod daemon;
 pub mod metrics;
 pub mod proc;
 pub mod protocol;
+pub mod query;
 pub mod sampler;
 pub mod server;
 pub mod state;

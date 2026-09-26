@@ -45,7 +45,7 @@ jobs:
         run: |
           name="simple-metrics-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$name"
-          cp "target/${{ matrix.target }}/release/simple-metrics" LICENSE README.md "$name/"
+          cp "target/${{ matrix.target }}/release/simple-metrics" "target/${{ matrix.target }}/release/smq" LICENSE README.md "$name/"
           tar -czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
 
