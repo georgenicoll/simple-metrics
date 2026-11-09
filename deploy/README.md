@@ -33,9 +33,8 @@ Which machine to deploy to is **not** in the repository. Copy the example and
 fill it in:
 
 ```bash
-cd deploy
-cp example.server.tfvars server.tfvars     # server.tfvars is git-ignored
-$EDITOR server.tfvars
+cp deploy/example.server.tfvars deploy/server.tfvars   # server.tfvars is git-ignored
+$EDITOR deploy/server.tfvars
 ```
 
 | Setting | |
@@ -50,10 +49,42 @@ $EDITOR server.tfvars
 | `http_bind_address`, `http_port` | Where the page is served. Default `127.0.0.1:8080`. Use the machine's LAN address, or `0.0.0.0` for every address. |
 | `title`, `interval`, `retention`, `name_prefix` | Optional: the page's heading (default: the host), how often to sample (`5s`), how long to keep (`7d`), and a prefix for the container and volume names. |
 
-To deploy to a second machine, make a second file (e.g. `other.tfvars`) and
-give it its own state, since each machine's containers are tracked in the
-state: add `-state=other.tfstate` to every `tofu` command for it. Both are
-git-ignored.
+To deploy to a second machine, make a second file (e.g. `other.tfvars`, which
+is git-ignored too) and point `SMS_CONFIG` at it; see the next section.
+
+## The `sms` wrapper
+
+`./sms` (in the repository root, in the style of wireguard-router's `wgr` and
+wireguard-ap's `wga`) is a thin wrapper around `tofu` that runs it in `deploy/`
+with your config file, so day to day you type:
+
+```bash
+./sms init                 # once
+./sms plan
+./sms apply
+./sms output               # the page's URL, and how to read the logs
+./sms destroy
+```
+
+Any other tofu command and its arguments pass straight through
+(`./sms output -raw url`, `./sms apply -replace=docker_container.web`).
+
+| Setting (environment) | |
+|---|---|
+| `SMS_CONFIG` | The config file for the machine. Default `deploy/server.tfvars`. Give a second machine its own file and set this to it: `SMS_CONFIG=~/private/other.tfvars ./sms apply`. |
+| `SMS_STATE_DIR` | Where to keep the state, instead of `deploy/`. The state says what was deployed where, so a private, backed-up place is sensible. |
+
+**State is kept per config file**, named after it: `server.tfvars` uses
+`server.tfstate`, `other.tfvars` uses `other.tfstate`. So two machines never
+share or overwrite each other's state, even without `SMS_STATE_DIR`. (State
+files are git-ignored.) Because of that, don't mix `./sms` with plain `tofu`
+run in `deploy/`: plain `tofu` uses `terraform.tfstate` and wouldn't see what
+`./sms` deployed. If you do run `tofu` directly, add
+`-var-file=server.tfvars -state=server.tfstate`.
+
+`./sms` prints the `tofu` command it runs (as `wgr` and `wga` do), and checks
+that the config file exists before anything that needs it, with a message
+saying how to make one.
 
 ## Which interfaces
 
@@ -65,7 +96,7 @@ so on for the bridges). The list it settled on is in the collector's log
 (`docker logs simple-metrics-collector`).
 
 - An interface that appears **after** the collector started isn't charted
-  until it restarts (`tofu apply` doesn't restart it if nothing changed; use
+  until it restarts (`./sms apply` doesn't restart it if nothing changed; use
   `ssh <user>@<host> docker restart simple-metrics-collector`).
 - If the set of interfaces differs after a restart, **the saved history is
   discarded** and starts afresh, because the history file belongs to one exact
@@ -79,10 +110,9 @@ so on for the bridges). The list it settled on is in the collector's log
 ## Deploy
 
 ```bash
-cd deploy
-tofu init                                  # once
-tofu plan  -var-file=server.tfvars
-tofu apply -var-file=server.tfvars
+./sms init                                 # once
+./sms plan
+./sms apply
 ```
 
 `apply` prints the page's URL and a command for reading the containers' logs.
@@ -90,13 +120,13 @@ tofu apply -var-file=server.tfvars
 ## Upgrade
 
 Change `image` in `server.tfvars` to the new release's (with its digest) and
-`tofu apply -var-file=server.tfvars`. The containers are replaced; the history
+`./sms apply`. The containers are replaced; the history
 lives in a volume and carries on, with a short gap in the charts.
 
 ## Remove
 
 ```bash
-tofu destroy -var-file=server.tfvars
+./sms destroy
 ```
 
 That removes the containers, the volumes **(including the history)** and the
