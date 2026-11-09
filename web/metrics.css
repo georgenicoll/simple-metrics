@@ -1,16 +1,17 @@
 /* The metrics chart (see metrics.js): the pickers sit side by side above the
    chart, and wrap on a narrow screen. Colours and spacing come from the
    page's own variables (Pico's, in wireguard-ap) with fallbacks, so this
-   works on any page. */
+   works on any page.
+
+   This file goes wherever the chart is embedded, so it must not decide how
+   a picker and its label are laid out: the page the chart is in already has
+   an opinion about `.field-row` (wireguard-ap lays it out as a row). smweb's
+   own page, which has none, does that in page.css. */
 .metric-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 1.5rem;
   margin-bottom: var(--pico-spacing, 1rem);
-}
-.metric-controls .field-row {
-  display: flex;
-  flex-direction: column;
 }
 .chart {
   min-height: 320px;
