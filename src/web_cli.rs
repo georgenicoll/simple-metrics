@@ -247,7 +247,7 @@ mod tests {
             String::from_utf8(out).unwrap(),
             format!("smweb {VERSION}\n")
         );
-        assert!(err.is_empty());
+        assert_eq!(err, Vec::<u8>::new());
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let outcome = run(&["--bogus".to_owned()], &mut out, &mut err);
         assert_eq!(outcome, Outcome::Exit(EXIT_USAGE));
-        assert!(out.is_empty());
+        assert_eq!(out, Vec::<u8>::new());
         let err = String::from_utf8(err).unwrap();
         assert!(err.contains("smweb: unknown argument") && err.contains("Usage:"));
     }

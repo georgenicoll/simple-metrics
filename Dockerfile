@@ -14,8 +14,10 @@
 
 # Only here to make two directories owned by the unprivileged user: an empty
 # image has no shell to do it with, and a new volume takes its ownership from
-# the directory in the image.
-FROM alpine:3.22 AS prep
+# the directory in the image. Always run on the builder's own architecture
+# (--platform=$BUILDPLATFORM), never emulated: the directories it makes are
+# the same whatever the image is for, and emulating would need QEMU.
+FROM --platform=$BUILDPLATFORM alpine:3.22 AS prep
 RUN mkdir -p /state /run/simple-metrics \
  && chown 65532:65532 /state /run/simple-metrics
 

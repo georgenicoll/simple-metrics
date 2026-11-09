@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 struct Servers {
     daemon: Child,
@@ -124,7 +124,7 @@ fn serves_the_page_the_data_and_the_assets() {
     assert!(data.starts_with("HTTP/1.1 200 OK\r\n"), "{data}");
     let value: Value = serde_json::from_str(body(&data)).unwrap();
     assert_eq!(value["metric"]["name"], "cpu_percent");
-    assert!(!value["timestamps"].as_array().unwrap().is_empty());
+    assert_ne!(value["timestamps"], json!([]));
     assert_eq!(
         value["avg"].as_array().unwrap().len(),
         value["timestamps"].as_array().unwrap().len()

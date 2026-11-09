@@ -187,7 +187,10 @@ mod tests {
             interface_names(&root),
             ["br-ap", "eth0", "lo", "wg0", "wlan0", "wlan1"]
         );
-        assert!(interface_names(Path::new("/nonexistent")).is_empty());
+        assert_eq!(
+            interface_names(Path::new("/nonexistent")),
+            Vec::<String>::new()
+        );
     }
     const TEMP: &str = include_str!("../tests/fixtures/root/sys/class/thermal/thermal_zone0/temp");
 

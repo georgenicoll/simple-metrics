@@ -81,7 +81,7 @@ jobs:
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Check they are statically linked and run
         run: |
-          for name in simple-metrics smq; do
+          for name in simple-metrics smq smweb; do
             binary=target/${{ matrix.target }}/release/$name
             info=$(file "$binary")
             echo "$info"
@@ -90,3 +90,82 @@ jobs:
             echo "$info" | grep -Eq "statically linked|static-pie linked"
             "$binary" --version
           done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/simple-metrics
+            target/${{ matrix.target }}/release/smq
+            target/${{ matrix.target }}/release/smweb
+          if-no-files-found: error
+
+  image:
+    # The container image, built the way the release builds it (from these
+    # same static binaries, for both architectures), and then run the way
+    # deploy/ runs it, so a problem shows here and not at the first release.
+    needs: static-binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bin-*
+          path: artifacts
+
+      - name: Lay the binaries out for the Dockerfile
+        run: |
+          mkdir -p dist/linux-amd64 dist/linux-arm64
+          cp artifacts/bin-x86_64-unknown-linux-musl/* dist/linux-amd64/
+          cp artifacts/bin-aarch64-unknown-linux-musl/* dist/linux-arm64/
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build for both architectures
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+
+      - name: Build for this machine, to run
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: simple-metrics:ci
+
+      - name: Run it as deploy/ does
+        run: |
+          set -euo pipefail
+          for name in simple-metrics smq smweb; do
+            docker run --rm "simple-metrics:ci" "/$name" --version
+          done
+
+          hardening=(--user 65532:65532 --read-only --cap-drop ALL --security-opt no-new-privileges:true)
+          docker volume create sm-run
+          docker volume create sm-state
+          docker run -d --name collector "${hardening[@]}" --network host \
+            -v /proc:/host/proc:ro -v /sys:/host/sys:ro \
+            -v sm-run:/run/simple-metrics -v sm-state:/state \
+            simple-metrics:ci /simple-metrics --interval 1s --retention 1h \
+            --state-dir /state --root /host --interface all --ignore-interface veth
+          docker run -d --name web "${hardening[@]}" -p 127.0.0.1:8080:8080 \
+            -v sm-run:/run/simple-metrics \
+            simple-metrics:ci /smweb --http 0.0.0.0:8080
+
+          # Wait for a sample to show up in the chart's data.
+          for _ in $(seq 1 30); do
+            if curl -sf 'http://127.0.0.1:8080/data?metric=cpu_percent&range=1h' | grep -Eq '"timestamps":\[[0-9]'; then
+              ok=1; break
+            fi
+            sleep 1
+          done
+          docker logs collector
+          docker logs web
+          [ "${ok:-0}" = 1 ] || { echo "no data reached the page" >&2; exit 1; }
+          curl -sf http://127.0.0.1:8080/fragment | grep -q 'value="cpu_percent"'
+          curl -sf http://127.0.0.1:8080/ | grep -q '<h1>'
+          # No virtual interfaces: the filter works.
+          ! curl -sf http://127.0.0.1:8080/fragment | grep -q 'veth'
