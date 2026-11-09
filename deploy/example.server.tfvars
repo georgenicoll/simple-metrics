@@ -21,7 +21,7 @@ ssh_user = "your-ssh-user"
 
 # The image to run, pinned by digest. A release's "image" job prints the line
 # to copy (in its summary on the Actions page).
-image = "ghcr.io/georgenicoll/simple-metrics:v0.5.0@sha256:REPLACE_WITH_THE_DIGEST"
+image = "ghcr.io/georgenicoll/simple-metrics:v0.5.2@sha256:REPLACE_WITH_THE_DIGEST"
 
 # The network interfaces to chart. "all" (the default if you leave this out)
 # charts every interface the machine has when the collector starts, except lo
