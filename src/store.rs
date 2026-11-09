@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(store.width(), 2);
         assert_eq!(store.latest(), None);
         let snapshot = store.snapshot();
-        assert!(snapshot.timestamps.is_empty());
+        assert_eq!(snapshot.timestamps, Vec::<u64>::new());
         assert_eq!(snapshot.columns, [Vec::<f64>::new(), Vec::new()]);
     }
 
@@ -654,14 +654,17 @@ mod tests {
     #[test]
     fn a_range_outside_the_data_is_empty_not_an_error() {
         let store = five_records();
-        assert!(range(&store, Some(6000), None).is_empty());
-        assert!(range(&store, None, Some(999)).is_empty());
-        assert!(range(&store, Some(2100), Some(2900)).is_empty());
+        assert_eq!(range(&store, Some(6000), None), Vec::<u64>::new());
+        assert_eq!(range(&store, None, Some(999)), Vec::<u64>::new());
+        assert_eq!(range(&store, Some(2100), Some(2900)), Vec::<u64>::new());
         assert!(
             range(&store, Some(4000), Some(2000)).is_empty(),
             "backwards"
         );
-        assert!(range(&store, Some(u64::MAX), Some(u64::MAX)).is_empty());
+        assert_eq!(
+            range(&store, Some(u64::MAX), Some(u64::MAX)),
+            Vec::<u64>::new()
+        );
         assert_eq!(range(&store, Some(0), Some(u64::MAX)).len(), 5);
     }
 
@@ -675,7 +678,7 @@ mod tests {
         assert_eq!(range(&store, None, None), [800, 900, 1000, 1100]);
         assert_eq!(range(&store, Some(850), Some(1000)), [900, 1000]);
         assert_eq!(range(&store, Some(1100), None), [1100]);
-        assert!(range(&store, None, Some(799)).is_empty());
+        assert_eq!(range(&store, None, Some(799)), Vec::<u64>::new());
     }
 
     #[test]
@@ -813,13 +816,13 @@ mod tests {
     fn downsampling_nothing_gives_nothing() {
         let empty = store(4, 1);
         let result = empty.downsample(None, None, &[0], 1000, true).unwrap();
-        assert!(result.timestamps.is_empty());
+        assert_eq!(result.timestamps, Vec::<u64>::new());
         assert_eq!(result.avg, [Vec::<f64>::new()]);
         assert_eq!(result.min, Some(vec![Vec::new()]));
         let outside = ten_records()
             .downsample(Some(50_000), None, &[0], 1000, false)
             .unwrap();
-        assert!(outside.timestamps.is_empty());
+        assert_eq!(outside.timestamps, Vec::<u64>::new());
     }
 
     #[test]

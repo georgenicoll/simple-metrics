@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::config::Config;
+use crate::config::{Config, ConfigError};
 use crate::metrics::Schema;
 use crate::persist::{self, Journal, Loaded};
-use crate::proc::Readings;
+use crate::proc::{self, Readings};
 use crate::sampler::Sampler;
 use crate::server;
 use crate::state::Shared;
@@ -23,6 +23,8 @@ use crate::store::Store;
 /// Why the daemon couldn't start.
 #[derive(Debug)]
 pub enum DaemonError {
+    /// The settings can't be used once the machine's interfaces are known.
+    Config(ConfigError),
     /// The store would be too big to allocate.
     TooLarge,
     /// Something is already listening on the socket's path.
@@ -50,6 +52,7 @@ pub enum DaemonError {
 impl fmt::Display for DaemonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Config(error) => write!(f, "{error}"),
             Self::TooLarge => write!(f, "the store is too large to allocate"),
             Self::AlreadyRunning(path) => {
                 write!(
@@ -87,6 +90,10 @@ impl std::error::Error for DaemonError {}
 /// If the store can't be allocated, the socket can't be set up, or the
 /// sampler thread can't be started.
 pub fn run(config: &Config) -> Result<Infallible, DaemonError> {
+    let config = &config
+        .clone()
+        .resolve_interfaces(&proc::interface_names(&config.root))
+        .map_err(DaemonError::Config)?;
     let schema = Schema::new(&config.interfaces);
     let mut store = Store::new(config.capacity, schema.len()).ok_or(DaemonError::TooLarge)?;
     let history = match &config.state_dir {
@@ -131,6 +138,11 @@ pub fn run(config: &Config) -> Result<Infallible, DaemonError> {
         config.interval,
         config.capacity,
         Store::bytes_for(config.capacity.get(), shared.schema.len()).unwrap_or(0) >> 20,
+    ));
+    crate::log(format_args!(
+        "charting {} network interfaces: {}",
+        config.interfaces.len(),
+        config.interfaces.join(" ")
     ));
     server::serve(&listener, &shared)
 }

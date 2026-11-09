@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn silence_ends_the_conversation_quietly() {
-        assert!(converse(b"").is_empty());
+        assert_eq!(converse(b""), Vec::<String>::new());
     }
 
     #[test]

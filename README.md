@@ -27,7 +27,9 @@ Every record holds the same set of values, taken together:
 | `net_<iface>_tx_bytes_per_sec` | bytes/s | `/proc/net/dev` |
 
 The network interfaces are `eth0`, `wlan0`, `wlan1`, `br-ap` and `wg0` unless
-you say otherwise. A value that can't be worked out (an interface that isn't
+you say otherwise: name others with `--interface`, or chart every interface
+the machine has with `--interface all` (see "Choosing the network interfaces").
+A value that can't be worked out (an interface that isn't
 there, a counter that was reset, the first sample's rates, a file that can't be
 read) is a **gap**: `null` in the JSON, never a misleading zero.
 
@@ -56,6 +58,48 @@ milliseconds since the Unix epoch. `smq --help` lists everything.
 It needs to be allowed to use the socket: the daemon's default is the owner
 and group only.
 
+## Seeing it: `smweb`
+
+`smweb` is a small read-only web server, built alongside the daemon and shipped
+in the same release archive and image. It serves the chart of any metric over
+the last hour, 6 hours, day or week, refreshing every 5 seconds: the line is
+the average and the shaded band the smallest-to-largest value in each time
+bucket, so a short spike still shows on a week-long chart. The page, its
+script and styles and the chart library (uPlot) are built into the binary, so
+there is nothing else to install.
+
+```bash
+smweb --http 127.0.0.1:8080     # then open http://127.0.0.1:8080/
+```
+
+| Option | Default | |
+|---|---|---|
+| `--socket <PATH>` | `/run/simple-metrics/simple-metrics.sock` | The collector to read from. |
+| `--http <ADDR:PORT>` | `127.0.0.1:8080` (if no `--unix`) | Serve HTTP here, e.g. `0.0.0.0:80`. |
+| `--unix <PATH>` | none | Also (or instead) serve HTTP on this Unix socket, for a reverse proxy on the same machine. |
+| `--unix-mode <MODE>` | `660` | That socket's permissions, in octal. |
+| `--base-path <PATH>` | none | Where a reverse proxy mounts it, e.g. `/metrics`, so the links in its pages work. |
+| `--title <TEXT>` | `Metrics` | The heading of the page. |
+
+| Path | |
+|---|---|
+| `/` | The chart as a complete page. |
+| `/fragment` | Just the chart's markup (pickers, chart, script and style links), for another web app to embed in its own page. |
+| `/data?metric=NAME&range=1h` | The chart's data as JSON: `timestamps`, `avg`, `min`, `max`. |
+| `/assets/NAME` | The script, styles and chart library. |
+| `/healthz` | `ok`. |
+
+**There is no login.** Anyone who can connect sees the metrics, so listen only
+where that is acceptable: a Unix socket with restricted permissions, the
+machine's own address, or a network you trust. It serves plain HTTP only, one
+request per connection, and only `GET` and `HEAD`.
+
+To embed the chart in a web app that has its own login and styling, run `smweb`
+on a Unix socket with `--base-path`, have the app proxy that path to it, and
+place `/fragment` in the app's page. The fragment's styles use the page's own
+CSS variables (Pico's, if it has them) with fallbacks, so it takes on the
+page's look.
+
 ## Memory
 
 Room for every record is allocated once, when it starts, and never grows, and
@@ -79,7 +123,8 @@ simple-metrics --socket /run/simple-metrics/simple-metrics.sock
 | `--socket-mode <MODE>` | `660` | The socket's permissions, in octal. The default lets the owner and group connect, and no one else. |
 | `--interval <TIME>` | `5s` | How often to sample. |
 | `--retention <TIME>` | `7d` | How much history to keep. The number of records is this divided by the interval. |
-| `--interface <NAME>` | `eth0 wlan0 wlan1 br-ap wg0` | A network interface to report on. Repeat for several; giving any replaces the defaults. |
+| `--interface <NAME>` | `eth0 wlan0 wlan1 br-ap wg0` | A network interface to report on. Repeat for several; giving any replaces the defaults. `all` means every interface the machine has (see "Choosing the network interfaces"). |
+| `--ignore-interface <PREFIX>` | none | With `--interface all`: skip the interfaces whose names start with `PREFIX`. Repeat for several. |
 | `--state-dir <DIR>` | none | Also keep the history in `DIR/history.bin`, so it survives restarts and reboots. See "Keeping the history". Created if need be. |
 | `--flush-interval <TIME>` | `1m` | How often new records are written to that file. |
 | `--root <DIR>` | `/` | Read `proc/` and `sys/` under this directory. For testing. |
@@ -87,6 +132,52 @@ simple-metrics --socket /run/simple-metrics/simple-metrics.sock
 A `TIME` is a whole number with an optional unit (`ms`, `s`, `m`, `h`, `d`;
 seconds if none): `500ms`, `5s`, `90m`, `7d`. Settings that would need more
 than 1 GiB for the store are refused.
+
+## Choosing the network interfaces
+
+By default the daemon reports on five named interfaces (the ones a particular
+Raspberry Pi has). Name your own with `--interface`, once for each:
+
+```bash
+simple-metrics --interface eth0 --interface wg0
+```
+
+or, on a machine whose interfaces you don't want to list, chart all of them:
+
+```bash
+simple-metrics --interface all --ignore-interface veth --ignore-interface docker
+```
+
+`--interface all` lists the machine's interfaces **once, when the daemon
+starts**, and charts each of them, in name order, except:
+
+- the loopback, `lo`, which is never charted;
+- any whose name **starts with** an `--ignore-interface` prefix. This is how
+  to skip the virtual ones that come and go, such as the `veth…` interface
+  Docker makes for every container, or `docker0` and `br-…` bridges. (It
+  only applies together with `all`, and the daemon refuses it otherwise.)
+
+An interface also given by name with `--interface` is always kept, even if its
+prefix is ignored, and even if it isn't there yet (its chart is a gap until it
+appears). The daemon logs the list it settled on when it starts.
+
+Things to know:
+
+- **The set is fixed while the daemon runs.** An interface that appears later
+  isn't charted until the daemon restarts; one that goes away is a gap.
+- **Changing the set starts the history afresh.** The history file records the
+  metrics it holds (see "Keeping the history"), so if the set of interfaces
+  differs after a restart, the saved history is ignored. That is why the
+  virtual interfaces that come and go are worth ignoring: they would change
+  the set, and so reset the history, every time one was added or removed
+  before a restart. If the set must stay stable, name the interfaces instead
+  of using `all`.
+- **Each interface costs memory.** Two metrics (received and sent bytes per
+  second), about 2 MB at the default 5 second interval and 7 days: charting 10
+  interfaces takes about 35 MB in all, against 15 MB for the fixed metrics
+  and five interfaces. At most 64 interfaces are charted; with more, the
+  daemon refuses to start and says to ignore some. (Size any memory limit
+  for the process accordingly.)
 
 ## Keeping the history
 
@@ -128,9 +219,11 @@ an error if the socket can't be set up. It replaces a stale socket left by an
 earlier run, but refuses to replace a live one, or anything that isn't a
 socket. It needs no signal handling: stopping it (`SIGTERM`) just ends it.
 
-This repository only builds the binaries. Installing them and running the
-daemon as a service is up to whoever deploys it. For trying it out on a
-development machine, `./run_local.sh` builds it and runs it in the foreground.
+This repository builds the binaries and a container image, and has a ready-made
+way to deploy the image (see "Deploying with Docker" below); installing the
+binaries any other way, for instance as a systemd service, is up to whoever
+deploys them. For trying it out on a development machine, `./run_local.sh`
+builds it and runs it in the foreground.
 
 ## The socket protocol
 
@@ -189,6 +282,30 @@ served at once (a 17th is told "too many connections" and closed); a
 connection silent for 30 seconds is closed. Timestamps are strictly
 increasing even if the system clock steps backwards.
 
+## Deploying with Docker
+
+Each release is also published as a multi-architecture (amd64 and arm64)
+container image, `ghcr.io/georgenicoll/simple-metrics:<version>`, holding
+`simple-metrics`, `smq` and `smweb` as static binaries and nothing else (about
+2 MB). Run one container per program, sharing a volume for the collector's
+socket. `deploy/` is an OpenTofu (or Terraform) configuration that does exactly
+that on a remote machine over SSH, using the Docker provider:
+
+- **The machine is not in the repository.** Copy `deploy/example.server.tfvars`
+  to `deploy/server.tfvars` (which is git-ignored) and set its hostname, SSH
+  user, the image to run, the network interfaces to chart and where to serve
+  the page (and, optionally, to pin the CPU architecture, `amd64` or `arm64`;
+  by default the machine's Docker picks the matching variant of the image).
+- **Nothing is installed on the machine and no `sudo` is used**; it only needs
+  Docker, and an SSH user who can run it (in the `docker` group).
+
+See [deploy/README.md](deploy/README.md) for the steps, what it creates, how to
+upgrade and how to remove it.
+
+Other ways of running it, such as a systemd service on a Raspberry Pi, use the
+binaries from the release archive; [wireguard-ap](https://github.com/georgenicoll/wireguard-ap)
+does that for its Pi.
+
 ## Building
 
 You need [rustup](https://rustup.rs). `rust-toolchain.toml` selects the right
@@ -229,10 +346,15 @@ cargo test
 | `src/protocol.rs`, `src/server.rs` | The JSON-lines protocol and the connection handling |
 | `src/daemon.rs` | Putting it together: the sampler thread, the socket, startup checks |
 | `src/query.rs`, `src/bin/smq.rs` | The `smq` client: arguments, the request, printing the answer |
+| `src/web.rs`, `src/web_cli.rs`, `src/bin/smweb.rs` | The `smweb` web server: HTTP, routing, the page, and its command line |
+| `web/` | What `smweb` serves, built into the binary: the page script and styles, and uPlot (MIT; see `web/uPlot.LICENSE`) |
 | `src/main.rs` | A thin wrapper around the library |
+| `Dockerfile` | The image: the release's static binaries in an empty image (built by the release workflow, not by hand) |
+| `deploy/` | OpenTofu configuration that runs the image on a remote machine over SSH (see "Deploying with Docker") |
 | `run_local.sh` | Builds and runs the daemon in the foreground for development (used with `smq --local`) |
 | `tests/daemon.rs` | End to end: runs the real binary on a real socket, including kill-and-restart with a state directory |
 | `tests/smq.rs` | End to end: runs the real `smq` against the real daemon |
+| `tests/smweb.rs` | End to end: runs the real `smweb` against the real daemon, over TCP and a Unix socket |
 | `tests/fixtures/root/` | Real `/proc` and `/sys` files captured from a Raspberry Pi 5, used by the tests |
 
 Lint rules live in `Cargo.toml` (`[lints]`) and `clippy.toml`: `unsafe` is
@@ -253,8 +375,13 @@ git tag v0.3.0 && git push origin v0.3.0
 ```
 
 The release workflow refuses a tag that doesn't match `Cargo.toml`, builds
-static `aarch64` and `x86_64` archives (each with `simple-metrics` and `smq`),
+static `aarch64` and `x86_64` archives (each with `simple-metrics`, `smq` and `smweb`),
 runs the tests, and publishes them as a GitHub release with a `SHA256SUMS` file.
+A last job then builds the multi-architecture image from those same binaries
+and pushes it to `ghcr.io/<owner>/simple-metrics:<tag>`; its digest is in that
+job's summary, which is the line to put in `deploy/server.tfvars`. The first
+time, the package is private: make it public (the package's settings on
+GitHub), or the machine being deployed to will need a registry login.
 
 ## Licence
 

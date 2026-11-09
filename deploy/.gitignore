@@ -1,0 +1,13 @@
+# Which machine this deploys to: yours alone, never checked in. Only the
+# example (example.server.tfvars) is.
+*.tfvars
+!example.*.tfvars
+*.auto.tfvars
+
+# OpenTofu working files and state. (.terraform.lock.hcl is NOT ignored: it
+# pins the provider version, and should be committed.)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log

@@ -65,7 +65,7 @@ mod tests {
             let (outcome, out, err) = run_with(&[flag]);
             assert_eq!(outcome, Outcome::Exit(EXIT_OK));
             assert_eq!(out, format!("simple-metrics {VERSION}\n"));
-            assert!(err.is_empty());
+            assert_eq!(err, "");
         }
     }
 
@@ -75,7 +75,7 @@ mod tests {
             let (outcome, out, err) = run_with(&[flag]);
             assert_eq!(outcome, Outcome::Exit(EXIT_OK));
             assert!(out.starts_with("Usage: simple-metrics"));
-            assert!(err.is_empty());
+            assert_eq!(err, "");
         }
     }
 
@@ -83,7 +83,7 @@ mod tests {
     fn an_unknown_argument_is_a_usage_error() {
         let (outcome, out, err) = run_with(&["--bogus"]);
         assert_eq!(outcome, Outcome::Exit(EXIT_USAGE));
-        assert!(out.is_empty());
+        assert_eq!(out, "");
         assert!(err.contains("unknown argument '--bogus'"));
         assert!(err.contains("Usage:"));
     }
@@ -92,7 +92,7 @@ mod tests {
     fn a_bad_value_is_a_usage_error_that_names_the_option() {
         let (outcome, out, err) = run_with(&["--interval", "soon"]);
         assert_eq!(outcome, Outcome::Exit(EXIT_USAGE));
-        assert!(out.is_empty());
+        assert_eq!(out, "");
         assert!(err.contains("--interval"), "{err}");
     }
 

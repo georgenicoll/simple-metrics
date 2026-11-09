@@ -734,7 +734,7 @@ mod tests {
         let reply = r#"{"ok":false,"v":1,"error":"unknown metric 'x'"}"#;
         let (code, out, err, _, _) = smq(&["read"], None, Ok(reply));
         assert_eq!(code, EXIT_FAILED);
-        assert!(out.is_empty());
+        assert_eq!(out, "");
         assert!(err.contains("unknown metric 'x'"), "{err}");
     }
 
@@ -747,7 +747,7 @@ mod tests {
         ] {
             let (code, out, err, _, _) = smq(&["info"], None, Err(kind.into()));
             assert_eq!(code, EXIT_FAILED);
-            assert!(out.is_empty());
+            assert_eq!(out, "");
             assert!(err.contains(expected), "{kind:?}: {err}");
             assert!(err.contains(DEFAULT_SOCKET), "{err}");
         }

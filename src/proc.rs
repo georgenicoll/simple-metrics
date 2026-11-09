@@ -72,6 +72,17 @@ impl Readings {
     }
 }
 
+/// The names of the network interfaces the machine has, from
+/// `proc/net/dev` under `root`, in name order. Empty if that can't be read.
+#[must_use]
+pub fn interface_names(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_to_string(root.join("proc/net/dev"))
+        .map(|text| parse_net_dev(&text).into_keys().collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
 /// Parses the aggregate `cpu` line of `/proc/stat`:
 /// `cpu user nice system idle iowait irq softirq steal guest guest_nice`.
 ///
@@ -168,6 +179,19 @@ mod tests {
     const LOADAVG: &str = include_str!("../tests/fixtures/root/proc/loadavg");
     const MEMINFO: &str = include_str!("../tests/fixtures/root/proc/meminfo");
     const NET_DEV: &str = include_str!("../tests/fixtures/root/proc/net/dev");
+
+    #[test]
+    fn the_interface_names_are_listed_in_order() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/root");
+        assert_eq!(
+            interface_names(&root),
+            ["br-ap", "eth0", "lo", "wg0", "wlan0", "wlan1"]
+        );
+        assert_eq!(
+            interface_names(Path::new("/nonexistent")),
+            Vec::<String>::new()
+        );
+    }
     const TEMP: &str = include_str!("../tests/fixtures/root/sys/class/thermal/thermal_zone0/temp");
 
     #[test]

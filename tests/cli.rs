@@ -29,5 +29,5 @@ fn version_flag_prints_the_version_and_exits_zero() {
 fn an_unknown_argument_exits_with_the_usage_code() {
     let output = run(&["--bogus"]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
 }
