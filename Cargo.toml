@@ -1,6 +1,6 @@
 [package]
 name = "simple-metrics"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 description = "A small in-memory metrics collector with a Unix-socket API"
 license = "MIT"

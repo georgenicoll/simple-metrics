@@ -126,7 +126,23 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: false
+          # Kept as a file, not pushed, so the index can be looked at below.
+          outputs: type=oci,dest=${{ runner.temp }}/image.tar
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.description=A small metrics collector and its web chart
+            index:org.opencontainers.image.licenses=MIT
+
+      - name: The image index names its source repository
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          digest=$(tar -xOf image.tar index.json | jq -r '.manifests[0].digest')
+          tar -xOf image.tar "blobs/sha256/${digest#sha256:}" > index-manifest.json
+          jq '{mediaType, annotations, platforms: [.manifests[].platform | select(.) | "\(.os)/\(.architecture)"]}' index-manifest.json
+          jq -e --arg want "https://github.com/${{ github.repository }}" \
+            '.annotations["org.opencontainers.image.source"] == $want' index-manifest.json
+          jq -e '[.manifests[].platform | select(.) | .architecture] | contains(["amd64","arm64"])' index-manifest.json
 
       - name: Build for this machine, to run
         uses: docker/build-push-action@v7
