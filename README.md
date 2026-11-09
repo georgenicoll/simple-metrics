@@ -86,7 +86,7 @@ smweb --http 127.0.0.1:8080     # then open http://127.0.0.1:8080/
 | `/` | The chart as a complete page. |
 | `/fragment` | Just the chart's markup (pickers, chart, script and style links), for another web app to embed in its own page. |
 | `/data?metric=NAME&range=1h` | The chart's data as JSON: `timestamps`, `avg`, `min`, `max`. |
-| `/assets/NAME` | The script, styles and chart library. |
+| `/assets/NAME` | The script, styles, chart library and the page's icon (a cartoon chimp holding a clapperboard, `web/favicon.svg`). `/favicon.ico` serves the same icon, since browsers ask for it by default. |
 | `/healthz` | `ok`. |
 
 **There is no login.** Anyone who can connect sees the metrics, so listen only
@@ -299,7 +299,9 @@ that on a remote machine over SSH, using the Docker provider:
 - **Nothing is installed on the machine and no `sudo` is used**; it only needs
   Docker, and an SSH user who can run it (in the `docker` group).
 
-See [deploy/README.md](deploy/README.md) for the steps, what it creates, how to
+`./sms` wraps `tofu` for it (`./sms init`, `./sms plan`, `./sms apply`,
+`./sms destroy`), running it in `deploy/` with your `server.tfvars`. See
+[deploy/README.md](deploy/README.md) for the steps, what it creates, how to
 upgrade and how to remove it.
 
 Other ways of running it, such as a systemd service on a Raspberry Pi, use the
@@ -347,10 +349,11 @@ cargo test
 | `src/daemon.rs` | Putting it together: the sampler thread, the socket, startup checks |
 | `src/query.rs`, `src/bin/smq.rs` | The `smq` client: arguments, the request, printing the answer |
 | `src/web.rs`, `src/web_cli.rs`, `src/bin/smweb.rs` | The `smweb` web server: HTTP, routing, the page, and its command line |
-| `web/` | What `smweb` serves, built into the binary: the page script and styles, and uPlot (MIT; see `web/uPlot.LICENSE`) |
+| `web/` | What `smweb` serves, built into the binary: the page script, styles and icon, and uPlot (MIT; see `web/uPlot.LICENSE`) |
 | `src/main.rs` | A thin wrapper around the library |
 | `Dockerfile` | The image: the release's static binaries in an empty image (built by the release workflow, not by hand) |
 | `deploy/` | OpenTofu configuration that runs the image on a remote machine over SSH (see "Deploying with Docker") |
+| `sms` | A thin wrapper around `tofu` for `deploy/`: `./sms plan`, `./sms apply`... with your config file and per-machine state |
 | `run_local.sh` | Builds and runs the daemon in the foreground for development (used with `smq --local`) |
 | `tests/daemon.rs` | End to end: runs the real binary on a real socket, including kill-and-restart with a state directory |
 | `tests/smq.rs` | End to end: runs the real `smq` against the real daemon |

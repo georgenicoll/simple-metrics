@@ -1,9 +1,9 @@
 # Copy this to server.tfvars (which is not checked in) and fill it in:
 #
-#   cp example.server.tfvars server.tfvars
-#   tofu init
-#   tofu plan  -var-file=server.tfvars
-#   tofu apply -var-file=server.tfvars
+#   cp deploy/example.server.tfvars deploy/server.tfvars
+#   ./sms init
+#   ./sms plan
+#   ./sms apply
 
 # The machine to deploy to, reachable over SSH from here.
 host = "your.server.name"

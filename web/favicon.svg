@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>A cartoon chimp holding a clapperboard</title>
+  <!-- the clapperboard, behind the hand. The light outline keeps it visible on
+       a dark tab bar. -->
+  <rect x="34" y="46" width="28" height="16" rx="1.6" fill="#2a2a30" stroke="#d9d9de" stroke-width="1.2"/>
+  <rect x="37" y="49.6" width="22" height="1.7" rx=".8" fill="#d9d9de"/>
+  <rect x="37" y="53.6" width="22" height="1.7" rx=".8" fill="#d9d9de"/>
+  <rect x="37" y="57.6" width="12" height="1.7" rx=".8" fill="#d9d9de"/>
+  <!-- the clapper arm, raised a little on its hinge, with its stripes -->
+  <g transform="rotate(-14 34 46)">
+    <rect x="34" y="38" width="28" height="8" rx="1.2" fill="#2a2a30" stroke="#d9d9de" stroke-width="1.2"/>
+    <path d="M38 38.6 h4.4 l-3.6 6.8 h-4.4 z M46 38.6 h4.4 l-3.6 6.8 h-4.4 z M54 38.6 h4.4 l-3.6 6.8 h-4.4 z" fill="#f4f4f6"/>
+  </g>
+
+  <!-- the arm, from under the chin to the hand -->
+  <path d="M22 44 Q23 60 31 56" fill="none" stroke="#5e4029" stroke-width="7" stroke-linecap="round"/>
+
+  <!-- the head -->
+  <g transform="translate(1.4 -0.4) scale(0.82)">
+    <circle cx="9" cy="35" r="8.5" fill="#5e4029"/>
+    <circle cx="55" cy="35" r="8.5" fill="#5e4029"/>
+    <circle cx="9.5" cy="35" r="5" fill="#e8b98f"/>
+    <circle cx="54.5" cy="35" r="5" fill="#e8b98f"/>
+    <ellipse cx="32" cy="31" rx="22" ry="23" fill="#5e4029"/>
+    <path d="M17 15 Q22 3 32 7 Q42 3 47 15 Q32 8 17 15 Z" fill="#3f2a1a"/>
+    <path d="M32 24 C28 19 15 21 15 33 C15 44 22 53 32 53 C42 53 49 44 49 33 C49 21 36 19 32 24 Z" fill="#e8b98f"/>
+    <ellipse cx="32" cy="44" rx="11" ry="8.5" fill="#f6dcc0"/>
+    <path d="M19.5 28.5 Q24.5 25 29 28" fill="none" stroke="#3f2a1a" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M35 28 Q39.5 25 44.5 28.5" fill="none" stroke="#3f2a1a" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="24.5" cy="33" r="3.2" fill="#24160c"/>
+    <circle cx="39.5" cy="33" r="3.2" fill="#24160c"/>
+    <circle cx="25.5" cy="31.9" r="1" fill="#fff"/>
+    <circle cx="40.5" cy="31.9" r="1" fill="#fff"/>
+    <ellipse cx="29.3" cy="41" rx="1.1" ry="1.5" fill="#8a5a3b"/>
+    <ellipse cx="34.7" cy="41" rx="1.1" ry="1.5" fill="#8a5a3b"/>
+    <path d="M25 46 Q32 53 39 46" fill="none" stroke="#6b3f2a" stroke-width="2.2" stroke-linecap="round"/>
+  </g>
+
+  <!-- the hand, gripping the board's edge: a palm and three fingers over it -->
+  <ellipse cx="32" cy="55" rx="4.4" ry="6" fill="#5e4029"/>
+  <rect x="32.4" y="49.6" width="7" height="3.2" rx="1.6" fill="#5e4029"/>
+  <rect x="32.4" y="53.4" width="7.4" height="3.2" rx="1.6" fill="#5e4029"/>
+  <rect x="32.4" y="57.2" width="6.6" height="3.2" rx="1.6" fill="#5e4029"/>
+</svg>

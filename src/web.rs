@@ -10,7 +10,7 @@
 //! | `/` | The chart as a complete page (with the `--title` as a heading) |
 //! | `/fragment` | Just the chart's markup, for another web app to embed |
 //! | `/data?metric=NAME&range=1h` | The chart's data as JSON |
-//! | `/assets/NAME` | The script, styles and chart library |
+//! | `/assets/NAME` | The script, styles, chart library and icon (a chimp holding a clapperboard) |
 //! | `/healthz` | `ok` |
 //!
 //! Only `GET` and `HEAD` are served, and nothing is ever written: there is
@@ -175,7 +175,7 @@ struct Asset {
     body: &'static [u8],
 }
 
-const ASSETS: [Asset; 5] = [
+const ASSETS: [Asset; 6] = [
     Asset {
         name: "metrics.js",
         content_type: "text/javascript; charset=utf-8",
@@ -195,6 +195,11 @@ const ASSETS: [Asset; 5] = [
         name: "uPlot.iife.min.js",
         content_type: "text/javascript; charset=utf-8",
         body: include_bytes!("../web/uPlot.iife.min.js"),
+    },
+    Asset {
+        name: "favicon.svg",
+        content_type: "image/svg+xml",
+        body: include_bytes!("../web/favicon.svg"),
     },
     Asset {
         name: "uPlot.min.css",
@@ -336,6 +341,7 @@ fn render_page(site: &Site, metrics: &Result<Value, CollectorError>) -> String {
         "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  \
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  \
          <title>{title}</title>\n  \
+         <link rel=\"icon\" type=\"image/svg+xml\" href=\"{base}/assets/favicon.svg?v={VERSION}\">\n  \
          <link rel=\"stylesheet\" href=\"{base}/assets/page.css?v={VERSION}\">\n</head>\n<body>\n\
          <main>\n<h1>{title}</h1>\n{}</main>\n</body>\n</html>\n",
         render_fragment(site, metrics)
@@ -504,6 +510,8 @@ pub fn route(
             &collector.request(&json!({ "op": "metrics" })),
         )),
         "/data" => data(collector, query, now_ms),
+        // Browsers ask for this by default, whatever the page says.
+        "/favicon.ico" => asset("favicon.svg"),
         "/healthz" => Response::text(200, "ok"),
         _ => match path.strip_prefix("/assets/") {
             Some(name) => asset(name),
@@ -908,6 +916,23 @@ mod tests {
         assert!(html.contains("<option value=\"1h\" selected>1h</option>"));
         assert!(html.contains("data-url=\"/data\""));
         assert!(html.contains("href=\"/assets/page.css?v="));
+        assert!(
+            html.contains(
+                "<link rel=\"icon\" type=\"image/svg+xml\" href=\"/assets/favicon.svg?v="
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_icon_is_an_svg_served_where_the_page_says_and_where_browsers_look() {
+        let fake = Fake::new(vec![]);
+        for path in ["/assets/favicon.svg", "/favicon.ico"] {
+            let response = get(&fake, path);
+            assert_eq!(response.status, 200, "{path}");
+            assert_eq!(response.content_type, "image/svg+xml", "{path}");
+            assert!(body(&response).starts_with("<svg "), "{path}");
+        }
     }
 
     #[test]

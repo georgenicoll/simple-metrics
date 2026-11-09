@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Thin wrapper around tofu that deploys simple-metrics (see deploy/) to one
+# machine and injects the config file that says which, so that day-to-day use
+# is:
+#
+#   ./sms init
+#   ./sms plan
+#   ./sms apply
+#   ./sms output
+#   ./sms destroy
+#
+# Configuration:
+#   SMS_CONFIG     path to your private .tfvars file for the machine (host,
+#                  ssh user, image...). Default: deploy/server.tfvars, which
+#                  is not checked in - copy deploy/example.server.tfvars. To
+#                  deploy to a second machine, give it its own file and point
+#                  SMS_CONFIG at it: its state is kept apart, named after the
+#                  file (other.tfvars -> other.tfstate).
+#   SMS_STATE_DIR  optional directory to keep state in, instead of deploy/.
+#                  Private and backed up, if you care about it: it lists what
+#                  was deployed where.
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_DIR="$REPO_DIR/deploy"
+
+usage() {
+    cat >&2 <<USAGE
+Usage: ./sms <tofu-command> [args...]
+
+Examples:
+  ./sms init
+  ./sms plan
+  ./sms apply
+  ./sms output
+  ./sms output -raw url
+  ./sms destroy
+
+The machine to deploy to is set in a config file (see SMS_CONFIG at the top of
+this script; default deploy/server.tfvars, copied from
+deploy/example.server.tfvars).
+USAGE
+    exit 2
+}
+
+[[ $# -lt 1 ]] && usage
+
+COMMAND="$1"; shift
+
+command -v tofu >/dev/null 2>&1 || {
+    echo "error: 'tofu' is not on PATH. See https://opentofu.org/docs/intro/install/" >&2
+    exit 1
+}
+
+# Absolute, because -chdir changes how relative paths resolve.
+CONFIG_PATH="${SMS_CONFIG:-$DEPLOY_DIR/server.tfvars}"
+CONFIG_DIR="$(cd "$(dirname "$CONFIG_PATH")" 2>/dev/null && pwd)" || {
+    echo "error: no such directory for the config file: $CONFIG_PATH" >&2
+    exit 1
+}
+CONFIG_PATH="$CONFIG_DIR/$(basename "$CONFIG_PATH")"
+
+ARGS=()
+
+# Commands that consume variables need the config file.
+case "$COMMAND" in
+plan | apply | destroy | refresh | import | console)
+    if [[ ! -r "$CONFIG_PATH" ]]; then
+        cat >&2 <<MSG
+error: cannot read the config file: $CONFIG_PATH
+
+Say which machine to deploy to, for example:
+  cp deploy/example.server.tfvars deploy/server.tfvars
+  \$EDITOR deploy/server.tfvars
+or point SMS_CONFIG at a file you keep elsewhere.
+MSG
+        exit 1
+    fi
+    ARGS+=("-var-file=$CONFIG_PATH")
+    ;;
+esac
+
+# State is kept per config file, so that deploying a second machine (another
+# config) never overwrites the first one's, even without SMS_STATE_DIR.
+STATE_DIR_ABS="$DEPLOY_DIR"
+if [[ -n "${SMS_STATE_DIR:-}" ]]; then
+    mkdir -p "$SMS_STATE_DIR"
+    STATE_DIR_ABS="$(cd "$SMS_STATE_DIR" && pwd)"
+fi
+STATE_NAME="$(basename "$CONFIG_PATH" .tfvars)"
+case "$COMMAND" in
+plan | apply | destroy | refresh | import | output | show | state | taint | untaint)
+    ARGS+=("-state=$STATE_DIR_ABS/$STATE_NAME.tfstate")
+    ;;
+esac
+
+set -x
+exec tofu -chdir="$DEPLOY_DIR" "$COMMAND" "${ARGS[@]}" "$@"
