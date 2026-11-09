@@ -1047,6 +1047,38 @@ mod tests {
         assert_eq!(get(&fake, "/assets/../Cargo.toml").status, 404);
     }
 
+    /// `css` with its `/* ... */` comments taken out, so a test can look at
+    /// the rules without tripping over the notes about them.
+    fn without_comments(css: &str) -> String {
+        let mut out = String::new();
+        let mut rest = css;
+        while let Some(start) = rest.find("/*") {
+            out.push_str(&rest[..start]);
+            rest = rest[start + 2..]
+                .find("*/")
+                .map_or("", |end| &rest[start + 2 + end + 2..]);
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn the_stylesheet_that_travels_with_the_chart_leaves_the_pickers_layout_to_the_page() {
+        // metrics.css is linked into whatever page embeds the chart, and that
+        // page already styles `.field-row` its own way (wireguard-ap's is a
+        // row). The stacked label-over-picker layout is smweb's own page's
+        // choice, so it lives in page.css, which only that page loads.
+        let fake = Fake::new(vec![]);
+        let shared = without_comments(&body(&get(&fake, "/assets/metrics.css")));
+        let own_page = without_comments(&body(&get(&fake, "/assets/page.css")));
+        assert!(
+            !shared.contains(".field-row"),
+            "metrics.css lays out .field-row: that belongs in page.css"
+        );
+        assert!(own_page.contains(".metric-controls .field-row"));
+        assert!(own_page.contains("flex-direction: column"));
+    }
+
     #[test]
     fn only_get_and_head_are_served() {
         let fake = Fake::new(vec![]);

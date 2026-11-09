@@ -43,7 +43,7 @@ $EDITOR deploy/server.tfvars
 | `ssh_user` | The user to log in as. Must be able to run `docker`. |
 | `ssh_private_key_path` | Optional. Leave out to use your agent or ssh config. |
 | `architecture` | Optional, normally left out. The image supports `amd64` and `arm64` and the machine's Docker picks the one that matches it. Set it to insist on one (`uname -m`: `x86_64` is `amd64`, `aarch64` is `arm64`); a mismatch then fails the pull. |
-| `image` | The image, pinned by digest: `ghcr.io/georgenicoll/simple-metrics:v0.5.0@sha256:...`. A release's `image` job prints this line in its summary. |
+| `image` | The image, pinned by digest: `ghcr.io/georgenicoll/simple-metrics:v0.5.3@sha256:...`. A release's `image` job prints this line in its summary. |
 | `interfaces` | The network interfaces to chart. The default, `["all"]`, charts every interface the machine has when the collector starts, except `lo` and the `ignore_interfaces`. Or list names, as `ip -br link` shows them (`["eth0", "wg0"]`), to fix the set. A name that doesn't exist is a gap in the chart, not an error. See "Which interfaces" below. |
 | `ignore_interfaces` | With `all`: leave out interfaces whose names **start with** any of these. Default `["veth"]`, the virtual interface Docker creates for each container. An interface named in `interfaces` is kept regardless. |
 | `http_bind_address`, `http_port` | Where the page is served. Default `127.0.0.1:8080`. Use the machine's LAN address, or `0.0.0.0` for every address. |
