@@ -214,6 +214,23 @@ fn the_interface_setting_changes_the_metrics() {
 }
 
 #[test]
+fn all_interfaces_charts_what_the_machine_has_except_lo_and_the_ignored() {
+    // The fixture machine has lo, eth0, wlan0, wlan1, br-ap and wg0.
+    let daemon = Daemon::start(&["--interface", "all", "--ignore-interface", "wlan"]);
+    let names = daemon.ask(&json!({"op": "metrics"})).to_string();
+    for kept in ["eth0", "br-ap", "wg0"] {
+        assert!(
+            names.contains(&format!("net_{kept}_rx_bytes_per_sec")),
+            "{kept}"
+        );
+    }
+    for left_out in ["wlan0", "wlan1", "net_lo_"] {
+        assert!(!names.contains(left_out), "{left_out}");
+    }
+    assert_eq!(daemon.ask(&json!({"op": "info"}))["metrics"], 11); // 5 + 2 * 3
+}
+
+#[test]
 fn latest_reports_the_values_in_the_fixture_files() {
     let daemon = Daemon::start(&[]);
     daemon.wait_for_records(2);

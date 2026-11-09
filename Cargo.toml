@@ -1,6 +1,6 @@
 [package]
 name = "simple-metrics"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 description = "A small in-memory metrics collector with a Unix-socket API"
 license = "MIT"
@@ -9,7 +9,7 @@ repository = "https://github.com/georgenicoll/simple-metrics"
 keywords = ["metrics", "monitoring", "linux", "daemon"]
 categories = ["command-line-utilities"]
 # Keep the published crate (and `cargo package`) to just what's needed.
-include = ["/src", "/tests", "/README.md", "/LICENSE"]
+include = ["/src", "/tests", "/web", "/README.md", "/LICENSE"]
 
 [dependencies]
 # The only dependency, and only for the socket protocol's JSON. Everything else

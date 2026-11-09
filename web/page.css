@@ -1,0 +1,61 @@
+/* The standalone page (smweb's own "/"): a plain page with light and dark
+   themes. Not used when the chart is embedded in another web app, which
+   brings its own styling. It defines the same variables Pico does, which is
+   what metrics.css and metrics.js read. */
+:root {
+  --pico-primary: #0172ad;
+  --pico-muted-color: #73818c;
+  --pico-muted-border-color: #e0e3e7;
+  --pico-del-color: #c62828;
+  --pico-spacing: 1rem;
+  --page-bg: #ffffff;
+  --page-fg: #1c2127;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pico-primary: #4aa8e0;
+    --pico-muted-color: #9aa5ae;
+    --pico-muted-border-color: #2f3640;
+    --pico-del-color: #ef7b7b;
+    --page-bg: #13171c;
+    --page-fg: #e3e7ea;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page-bg);
+  color: var(--page-fg);
+  font: 16px/1.5 system-ui, sans-serif;
+}
+main {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 1rem;
+}
+label {
+  font-size: 0.85rem;
+  color: var(--pico-muted-color);
+}
+select {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  color: var(--page-fg);
+  background: var(--page-bg);
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 0.3rem;
+}
+article {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 0.4rem;
+  padding: 1rem;
+}
+article header {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}

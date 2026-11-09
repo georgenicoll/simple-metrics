@@ -18,6 +18,12 @@ pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
 pub const DEFAULT_RETENTION: Duration = Duration::from_hours(168);
 /// The network interfaces to report on unless told otherwise.
 pub const DEFAULT_INTERFACES: [&str; 5] = ["eth0", "wlan0", "wlan1", "br-ap", "wg0"];
+/// What `--interface` is given to mean "every interface the machine has".
+pub const ALL_INTERFACES: &str = "all";
+/// The most network interfaces that will be charted: each costs about 2 MB
+/// (at the default interval and retention), so a machine with hundreds of
+/// virtual ones must be asked to skip them (`--ignore-interface`).
+pub const MAX_INTERFACES: usize = 64;
 /// How often new records are written to the history file, if there is one.
 pub const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 /// The most memory the store may be sized to use. A guard against a typo such
@@ -39,8 +45,15 @@ Options:
       --interval <TIME>     How often to sample [default: 5s]
       --retention <TIME>    How much history to keep [default: 7d]
       --interface <NAME>    A network interface to report on. Repeat for
-                            several; giving any replaces the defaults
+                            several; giving any replaces the defaults. `all`
+                            means every interface the machine has when the
+                            daemon starts, except lo (see --ignore-interface)
                             [default: eth0 wlan0 wlan1 br-ap wg0]
+      --ignore-interface <PREFIX>
+                            With `--interface all`: skip the interfaces whose
+                            names start with PREFIX, e.g. veth for the
+                            virtual ones Docker makes. Repeat for several.
+                            An interface named with --interface is kept
       --state-dir <DIR>     Keep the history in DIR too, so it survives a
                             restart or reboot (created if need be; the file
                             is history.bin, readable only by this user)
@@ -75,8 +88,13 @@ pub struct Config {
     pub state_dir: Option<PathBuf>,
     /// How often new records are written to the history file.
     pub flush_interval: Duration,
-    /// The network interfaces to report on, in order.
+    /// The network interfaces named on the command line, in order.
     pub interfaces: Vec<String>,
+    /// Whether to report on every interface the machine has as well (see
+    /// [`Config::resolve_interfaces`], which does it).
+    pub all_interfaces: bool,
+    /// With `all_interfaces`: the name prefixes of interfaces to leave out.
+    pub ignore_interfaces: Vec<String>,
     /// The directory `proc/` and `sys/` are read from.
     pub root: PathBuf,
 }
@@ -108,6 +126,11 @@ pub enum ConfigError {
         /// What was wrong with it.
         reason: &'static str,
     },
+    /// `--interface all` found more interfaces than are charted.
+    TooManyInterfaces {
+        /// How many there were.
+        count: usize,
+    },
     /// The retention and interval together need more memory than allowed.
     TooLarge {
         /// The memory the store would need, in bytes, if known.
@@ -125,6 +148,11 @@ impl fmt::Display for ConfigError {
                 value,
                 reason,
             } => write!(f, "invalid value '{value}' for {flag}: {reason}"),
+            Self::TooManyInterfaces { count } => write!(
+                f,
+                "--interface all found {count} network interfaces (at most {MAX_INTERFACES} are \
+                 charted); skip some with --ignore-interface <PREFIX>"
+            ),
             Self::TooLarge { bytes: Some(bytes) } => write!(
                 f,
                 "that retention and interval would need {} MiB for the store (at most {} MiB \
@@ -150,7 +178,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
     let mut socket_mode = DEFAULT_SOCKET_MODE;
     let mut interval = DEFAULT_INTERVAL;
     let mut retention = DEFAULT_RETENTION;
-    let mut interfaces: Vec<String> = Vec::new();
+    let mut chosen = InterfaceArgs::default();
     let mut root = PathBuf::from("/");
     let mut state_dir = None;
     let mut flush_interval = DEFAULT_FLUSH_INTERVAL;
@@ -195,13 +223,15 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
             }
             "--interface" => {
                 let name = value(flag)?;
-                if !is_valid_interface(&name) {
-                    return Err(invalid(&name, "not a usable interface name"));
-                }
-                if interfaces.contains(&name) {
-                    return Err(invalid(&name, "given more than once"));
-                }
-                interfaces.push(name);
+                chosen
+                    .add(name.clone())
+                    .map_err(|reason| invalid(&name, reason))?;
+            }
+            "--ignore-interface" => {
+                let prefix = value(flag)?;
+                chosen
+                    .ignore(prefix.clone())
+                    .map_err(|reason| invalid(&prefix, reason))?;
             }
             "--state-dir" => state_dir = Some(PathBuf::from(value(flag)?)),
             "--flush-interval" => {
@@ -213,7 +243,19 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
         }
     }
 
-    if interfaces.is_empty() {
+    let InterfaceArgs {
+        mut interfaces,
+        all: all_interfaces,
+        ignore: ignore_interfaces,
+    } = chosen;
+    if let Some(prefix) = ignore_interfaces.first().filter(|_| !all_interfaces) {
+        return Err(ConfigError::InvalidValue {
+            flag: "--ignore-interface".to_owned(),
+            value: prefix.clone(),
+            reason: "only applies together with --interface all",
+        });
+    }
+    if interfaces.is_empty() && !all_interfaces {
         interfaces = DEFAULT_INTERFACES.iter().map(ToString::to_string).collect();
     }
     let capacity = capacity_for(retention, interval, interfaces.len())?;
@@ -226,8 +268,98 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
         state_dir,
         flush_interval,
         interfaces,
+        all_interfaces,
+        ignore_interfaces,
         root,
     }))
+}
+
+/// The `--interface` and `--ignore-interface` options as they are given.
+#[derive(Default)]
+struct InterfaceArgs {
+    interfaces: Vec<String>,
+    all: bool,
+    ignore: Vec<String>,
+}
+
+impl InterfaceArgs {
+    /// An `--interface`: a name, or `all`.
+    fn add(&mut self, name: String) -> Result<(), &'static str> {
+        if name == ALL_INTERFACES {
+            return if std::mem::replace(&mut self.all, true) {
+                Err("given more than once")
+            } else {
+                Ok(())
+            };
+        }
+        if !is_valid_interface(&name) {
+            return Err("not a usable interface name");
+        }
+        if self.interfaces.contains(&name) {
+            return Err("given more than once");
+        }
+        self.interfaces.push(name);
+        Ok(())
+    }
+
+    /// An `--ignore-interface`: the start of a name.
+    fn ignore(&mut self, prefix: String) -> Result<(), &'static str> {
+        if !is_valid_interface(&prefix) {
+            return Err("not a usable interface name prefix");
+        }
+        if self.ignore.contains(&prefix) {
+            return Err("given more than once");
+        }
+        self.ignore.push(prefix);
+        Ok(())
+    }
+}
+
+impl Config {
+    /// Works out the final list of interfaces. Unless `--interface all` was
+    /// given this changes nothing. With it, the list is every one of
+    /// `available` (the machine's interfaces) except the loopback `lo` and
+    /// any whose name starts with an ignored prefix, in name order, followed
+    /// by any named on the command line that aren't there yet (so naming
+    /// one keeps it even if its prefix is ignored, or it isn't up yet).
+    ///
+    /// The set is fixed from here on: an interface that appears later isn't
+    /// charted until the daemon restarts.
+    ///
+    /// # Errors
+    /// If there are too many interfaces, or the store for them would be too
+    /// big.
+    pub fn resolve_interfaces(mut self, available: &[String]) -> Result<Self, ConfigError> {
+        if !self.all_interfaces {
+            return Ok(self);
+        }
+        let mut found: Vec<String> = available
+            .iter()
+            .filter(|name| {
+                *name != "lo"
+                    && is_valid_interface(name)
+                    && !self
+                        .ignore_interfaces
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix.as_str()))
+            })
+            .cloned()
+            .collect();
+        found.sort();
+        found.dedup();
+        for named in &self.interfaces {
+            if !found.contains(named) {
+                found.push(named.clone());
+            }
+        }
+        if found.len() > MAX_INTERFACES {
+            return Err(ConfigError::TooManyInterfaces { count: found.len() });
+        }
+        self.capacity = capacity_for(self.retention, self.interval, found.len())?;
+        self.interfaces = found;
+        self.all_interfaces = false;
+        Ok(self)
+    }
 }
 
 /// How many records cover `retention` at one per `interval`, provided the
@@ -441,6 +573,103 @@ mod tests {
             invalid_flag(&["--interface", "eth0", "--interface", "eth0"]),
             "--interface"
         );
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn all_interfaces_is_asked_for_by_name_and_is_not_a_name() {
+        let config = config(&["--interface", "all"]);
+        assert!(config.all_interfaces);
+        assert!(
+            config.interfaces.is_empty(),
+            "no defaults when asking for all"
+        );
+        assert_eq!(
+            invalid_flag(&["--interface", "all", "--interface", "all"]),
+            "--interface"
+        );
+    }
+
+    #[test]
+    fn resolving_all_takes_every_interface_but_lo_in_name_order() {
+        let resolved = config(&["--interface", "all"])
+            .resolve_interfaces(&names(&["wg0", "lo", "eth0", "br-ap"]))
+            .unwrap();
+        assert_eq!(resolved.interfaces, ["br-ap", "eth0", "wg0"]);
+        assert!(
+            !resolved.all_interfaces,
+            "resolving twice changes nothing more"
+        );
+    }
+
+    #[test]
+    fn ignored_prefixes_are_left_out_but_named_interfaces_are_kept() {
+        let resolved = config(&[
+            "--interface",
+            "all",
+            "--ignore-interface",
+            "veth",
+            "--ignore-interface",
+            "docker",
+            "--interface",
+            "veth-keep",
+            "--interface",
+            "not-up-yet",
+        ])
+        .resolve_interfaces(&names(&["eth0", "veth1a2b", "docker0", "veth-keep"]))
+        .unwrap();
+        assert_eq!(resolved.interfaces, ["eth0", "veth-keep", "not-up-yet"]);
+    }
+
+    #[test]
+    fn an_ignore_without_all_is_refused_and_a_bad_prefix_too() {
+        assert_eq!(
+            invalid_flag(&["--ignore-interface", "veth"]),
+            "--ignore-interface"
+        );
+        assert_eq!(
+            invalid_flag(&["--interface", "all", "--ignore-interface", "a b"]),
+            "--ignore-interface"
+        );
+        assert_eq!(
+            invalid_flag(&[
+                "--interface",
+                "all",
+                "--ignore-interface",
+                "x",
+                "--ignore-interface",
+                "x"
+            ]),
+            "--ignore-interface"
+        );
+    }
+
+    #[test]
+    fn without_all_resolving_changes_nothing() {
+        let before = config(&["--interface", "eth0"]);
+        let after = before
+            .clone()
+            .resolve_interfaces(&names(&["eth0", "wg0"]))
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn too_many_interfaces_is_an_error_that_says_what_to_do() {
+        let many: Vec<String> = (0..=MAX_INTERFACES).map(|n| format!("veth{n}")).collect();
+        let error = config(&["--interface", "all"])
+            .resolve_interfaces(&many)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ConfigError::TooManyInterfaces {
+                count: MAX_INTERFACES + 1
+            }
+        );
+        assert!(error.to_string().contains("--ignore-interface"));
     }
 
     #[test]

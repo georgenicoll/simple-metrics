@@ -1,0 +1,31 @@
+/* The metrics chart (see metrics.js): the pickers sit side by side above the
+   chart, and wrap on a narrow screen. Colours and spacing come from the
+   page's own variables (Pico's, in wireguard-ap) with fallbacks, so this
+   works on any page. */
+.metric-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: var(--pico-spacing, 1rem);
+}
+.metric-controls .field-row {
+  display: flex;
+  flex-direction: column;
+}
+.chart {
+  min-height: 320px;
+}
+/* uPlot draws its own legend; keep it clear of the axis and the same size as
+   the rest of the page's small text. */
+.chart .u-legend {
+  font-size: 0.8rem;
+  text-align: left;
+}
+.chart-status {
+  font-size: 0.8rem;
+  color: var(--pico-muted-color, #73818c);
+  margin-top: 0.5rem;
+}
+.chart-status.error {
+  color: var(--pico-del-color, #c62828);
+}

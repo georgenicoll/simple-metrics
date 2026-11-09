@@ -16,6 +16,7 @@
 //! - [`protocol`] and [`server`]: the JSON-lines socket API.
 //! - [`daemon`]: putting it together.
 //! - [`query`]: the `smq` command-line client.
+//! - [`web`] and [`web_cli`]: `smweb`, the web server for the metrics chart.
 
 #![forbid(unsafe_code)]
 
@@ -34,6 +35,8 @@ pub mod sampler;
 pub mod server;
 pub mod state;
 pub mod store;
+pub mod web;
+pub mod web_cli;
 
 /// This crate's version, as set in `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
