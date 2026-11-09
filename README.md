@@ -382,9 +382,42 @@ static `aarch64` and `x86_64` archives (each with `simple-metrics`, `smq` and `s
 runs the tests, and publishes them as a GitHub release with a `SHA256SUMS` file.
 A last job then builds the multi-architecture image from those same binaries
 and pushes it to `ghcr.io/<owner>/simple-metrics:<tag>`; its digest is in that
-job's summary, which is the line to put in `deploy/server.tfvars`. The first
-time, the package is private: make it public (the package's settings on
-GitHub), or the machine being deployed to will need a registry login.
+job's summary, which is the line to put in `deploy/server.tfvars`. Check that
+the package is public (the package's settings on GitHub): a private one means
+the machine being deployed to needs a registry login. Pull it without logging
+in to be sure.
+
+### If a release goes wrong
+
+Problems this project has actually had, and what fixed them:
+
+- **The `image` job fails with `denied: permission_denied: write_package`.**
+  This happened on the second and later releases: the first push of a package
+  (when it doesn't exist yet) worked, and pushing a new tag to the *existing*
+  package was refused, even though the job's `GITHUB_TOKEN` had
+  `Packages: write` (the job log lists the token's permissions) and the
+  package listed the repository with access. **Removing the repository under
+  the package's *Package settings, Manage Actions access* and adding it back
+  with the role `Write` fixed it**; the entry had been shown with the `Admin`
+  role, which did not work for pushing. We don't know why, and none of GitHub's
+  documentation we found explains it. Things that did **not** help: re-running
+  the job, and annotating the image index with its source repository (that
+  annotation is still there, and harmless). Deleting the package and re-running
+  also works, but loses the existing versions. Once access is fixed, **re-run
+  just the failed job** (`gh run rerun <run-id> --failed`): no new tag is
+  needed, and the digest is in that run's summary. A personal access token
+  would also avoid it, but is a long-lived secret and was not needed.
+- **The clippy job fails on code that passes locally.** CI uses the current
+  stable Rust, which can add lints: `assert_is_empty` (Rust 1.99) failed the
+  build on existing tests. Run `rustup update stable` first, then
+  `./check.sh`, to see what CI will.
+- **Building the image for `arm64` on the release runner failed** (planned,
+  caught before a release): a step that *runs* a command in the image needs
+  QEMU to emulate the other architecture. The Dockerfile's helper stage is
+  pinned to the builder's own architecture (`--platform=$BUILDPLATFORM`), so
+  nothing is emulated. CI builds both architectures and starts the image the
+  way `deploy/` does, so a problem like this shows in a pull request, not at
+  a release.
 
 ## Licence
 
