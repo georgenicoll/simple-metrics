@@ -28,7 +28,7 @@ locals {
 # Docker on the target machine, over SSH: nothing is installed there and no
 # sudo is used, but ssh_user does need to be allowed to run docker.
 provider "docker" {
-  host     = "ssh://${var.ssh_user}@${var.host}"
+  host     = "ssh://${var.ssh_user}@${var.host}:${var.ssh_port}"
   ssh_opts = local.ssh_opts
 }
 

@@ -5,5 +5,5 @@ output "url" {
 
 output "logs_hint" {
   description = "How to see what the containers are saying."
-  value       = "ssh ${var.ssh_user}@${var.host} docker logs --tail 50 ${docker_container.collector.name} ${docker_container.web.name}"
+  value       = "ssh -p ${var.ssh_port} ${var.ssh_user}@${var.host} docker logs --tail 50 ${docker_container.collector.name} ${docker_container.web.name}"
 }

@@ -41,6 +41,7 @@ $EDITOR deploy/server.tfvars
 |---|---|
 | `host` | The machine's hostname or IP, e.g. `your.server.name`. |
 | `ssh_user` | The user to log in as. Must be able to run `docker`. |
+| `ssh_port` | Optional. The SSH port; defaults to `22`. |
 | `ssh_private_key_path` | Optional. Leave out to use your agent or ssh config. |
 | `architecture` | Optional, normally left out. The image supports `amd64` and `arm64` and the machine's Docker picks the one that matches it. Set it to insist on one (`uname -m`: `x86_64` is `amd64`, `aarch64` is `arm64`); a mismatch then fails the pull. |
 | `image` | The image, pinned by digest: `ghcr.io/georgenicoll/simple-metrics:v0.5.3@sha256:...`. A release's `image` job prints this line in its summary. |
