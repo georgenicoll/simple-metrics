@@ -11,6 +11,9 @@ host = "your.server.name"
 # Who to log in as. Must be able to run docker (be in the docker group).
 ssh_user = "your-ssh-user"
 
+# Optional: the SSH port, if it isn't the default 22.
+# ssh_port = 2222
+
 # Optional: a private key for ssh_user. Leave out to use your SSH agent / ssh config.
 # ssh_private_key_path = "~/.ssh/id_ed25519"
 
