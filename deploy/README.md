@@ -51,7 +51,7 @@ $EDITOR deploy/server.tfvars
 | `title`, `interval`, `retention`, `name_prefix` | Optional: the page's heading (default: the host), how often to sample (`5s`), how long to keep (`7d`), and a prefix for the container and volume names. |
 
 To deploy to a second machine, make a second file (e.g. `other.tfvars`, which
-is git-ignored too) and point `SMS_CONFIG` at it; see the next section.
+is git-ignored too) and name it with `--config=other`; see the next section.
 
 ## The `sms` wrapper
 
@@ -70,18 +70,25 @@ with your config file, so day to day you type:
 Any other tofu command and its arguments pass straight through
 (`./sms output -raw url`, `./sms apply -replace=docker_container.web`).
 
-| Setting (environment) | |
-|---|---|
-| `SMS_CONFIG` | The config file for the machine. Default `deploy/server.tfvars`. Give a second machine its own file and set this to it: `SMS_CONFIG=~/private/other.tfvars ./sms apply`. |
-| `SMS_STATE_DIR` | Where to keep the state, instead of `deploy/`. The state says what was deployed where, so a private, backed-up place is sensible. |
+To deploy to a different machine, name its config with `--config` (it can go
+anywhere on the command line). Without it the name is `server`:
 
-**State is kept per config file**, named after it: `server.tfvars` uses
-`server.tfstate`, `other.tfvars` uses `other.tfstate`. So two machines never
-share or overwrite each other's state, even without `SMS_STATE_DIR`. (State
-files are git-ignored.) Because of that, don't mix `./sms` with plain `tofu`
-run in `deploy/`: plain `tofu` uses `terraform.tfstate` and wouldn't see what
-`./sms` deployed. If you do run `tofu` directly, add
-`-var-file=server.tfvars -state=server.tfstate`.
+```bash
+./sms plan                     # deploy/server.tfvars, state in server.tfstate
+./sms plan  --config=gorilla   # deploy/gorilla.tfvars, state in gorilla.tfstate
+./sms apply --config=gorilla
+```
+
+The name is a plain one (no path); the config and its state share it.
+`--config gorilla` and `--config=gorilla.tfvars` also work.
+
+**State is kept per config name**, in `deploy/` beside the config:
+`server.tfvars` uses `server.tfstate`, `gorilla.tfvars` uses `gorilla.tfstate`.
+So two machines never share or overwrite each other's state. (State files are
+git-ignored; they list what was deployed where, so back them up if you care.)
+Because of that, don't mix `./sms` with plain `tofu` run in `deploy/`: plain
+`tofu` uses `terraform.tfstate` and wouldn't see what `./sms` deployed. If you
+do run `tofu` directly, add `-var-file=server.tfvars -state=server.tfstate`.
 
 `./sms` prints the `tofu` command it runs (as `wgr` and `wga` do), and checks
 that the config file exists before anything that needs it, with a message
