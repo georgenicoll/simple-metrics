@@ -16,10 +16,23 @@
 //! always a complete file). That is also how it is repaired after any
 //! problem, and how it starts on every run.
 //!
-//! Layout, all little-endian: a header of the magic bytes, the number of
-//! values per record and a hash of the metrics' names (so history from a
-//! different set of metrics is never misread); then records of a timestamp,
-//! the values as `f64` bits, and a checksum of those.
+//! Layout, all little-endian: a header of the magic bytes, then the names of
+//! the metrics the file's columns hold (a `u32` count, then each name as a
+//! `u16` length and its bytes) and a checksum of those; then records of a
+//! timestamp, one `f64` per named column, and a checksum of those.
+//!
+//! The header names its columns, so a file says for itself what it holds. On
+//! load each column is matched to the metrics being recorded now *by name*:
+//! a metric the file lacks reads as a gap in the old records, and a column
+//! that is no longer recorded is dropped. Since the file is rewritten from
+//! the store at every start, it is in the current layout from then on, and
+//! history survives metrics being added or removed.
+//!
+//! The last magic byte marks the file format. A new, incompatible format
+//! needs a new value there (and the loader to read or refuse the old one).
+//! There is deliberately no other version number. If the format ever needs
+//! more than one more change in a row, it could say "see the next byte" with
+//! a value of 255 there; until then 255 is simply not understood.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -27,25 +40,65 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::metrics::Schema;
 use crate::store::Store;
 
-const MAGIC: &[u8; 8] = b"SMHIST\0\x01";
-const HEADER_LEN: usize = 8 + 4 + 8;
+const MAGIC: &[u8; 8] = b"SMHIST\0\x02";
+/// The magic of the first format, whose header held only a column count and a
+/// hash of the names. See [`legacy_names`].
+const LEGACY_MAGIC: &[u8; 8] = b"SMHIST\0\x01";
 /// The file's name inside the state directory.
 pub const FILE_NAME: &str = "history.bin";
 
-/// A hash of the metrics' names, in order: what makes stored history
-/// compatible with the metrics being recorded now.
-#[must_use]
-pub fn schema_hash(schema: &Schema) -> u64 {
+// TODO: remove this legacy support (`LEGACY_MAGIC`, `LEGACY_FIXED`,
+// `names_hash`, `legacy_names` and its test) once every server that keeps a
+// history has been upgraded past the release that introduced the named-column
+// format. A first-format file is only ever read once: the load rewrites it.
+
+/// The fixed metrics of the first format, before the percentage ones were
+/// added. Its files carry no names, so this is how they are understood.
+const LEGACY_FIXED: [&str; 5] = [
+    "cpu_percent",
+    "load1",
+    "mem_used_bytes",
+    "swap_used_bytes",
+    "cpu_temp_celsius",
+];
+
+/// A hash of the metrics' names, in order: what a first-format file stored.
+fn names_hash(names: &[String]) -> u64 {
     let mut hash = FNV64_OFFSET;
-    for metric in schema.metrics() {
-        for byte in metric.name.bytes().chain([0]) {
+    for name in names {
+        for byte in name.bytes().chain([0]) {
             hash = (hash ^ u64::from(byte)).wrapping_mul(FNV64_PRIME);
         }
     }
     hash
+}
+
+/// Reads the rest of a first-format header and works out which columns the
+/// file holds: the old fixed metrics, then the network ones. Those are taken
+/// to be the ones recorded now (`names`), which the stored hash confirms, or
+/// the file is refused.
+fn legacy_names<R: Read>(
+    reader: &mut R,
+    names: &[String],
+) -> io::Result<Result<Vec<String>, &'static str>> {
+    let mut rest = [0; 12];
+    if read_full(reader, &mut rest)? != rest.len() {
+        return Ok(Err("the file is shorter than its header"));
+    }
+    let width = u32::from_le_bytes(rest[..4].try_into().unwrap_or([0; 4]));
+    let hash = u64::from_le_bytes(rest[4..].try_into().unwrap_or([0; 8]));
+    let guess: Vec<String> = LEGACY_FIXED
+        .iter()
+        .map(|&name| name.to_owned())
+        .chain(names.iter().filter(|n| n.starts_with("net_")).cloned())
+        .collect();
+    if usize::try_from(width) == Ok(guess.len()) && hash == names_hash(&guess) {
+        Ok(Ok(guess))
+    } else {
+        Ok(Err("it was recorded with a different set of metrics"))
+    }
 }
 
 const FNV64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -58,12 +111,68 @@ fn checksum(bytes: &[u8]) -> u32 {
     })
 }
 
-fn header(width: usize, hash: u64) -> [u8; HEADER_LEN] {
-    let mut bytes = [0; HEADER_LEN];
-    bytes[..8].copy_from_slice(MAGIC);
-    bytes[8..12].copy_from_slice(&u32::try_from(width).unwrap_or(u32::MAX).to_le_bytes());
-    bytes[12..].copy_from_slice(&hash.to_le_bytes());
+/// The file header: the magic, then the column names and their checksum.
+fn header(names: &[String]) -> Vec<u8> {
+    let mut bytes = MAGIC.to_vec();
+    let count = u32::try_from(names.len()).unwrap_or(u32::MAX);
+    bytes.extend_from_slice(&count.to_le_bytes());
+    for name in names {
+        let name = name.as_bytes();
+        let length = u16::try_from(name.len()).unwrap_or(u16::MAX);
+        bytes.extend_from_slice(&length.to_le_bytes());
+        bytes.extend_from_slice(&name[..usize::from(length)]);
+    }
+    let sum = checksum(&bytes[MAGIC.len()..]);
+    bytes.extend_from_slice(&sum.to_le_bytes());
     bytes
+}
+
+/// The most columns a header may claim: a guard against a damaged count.
+const MAX_COLUMNS: usize = 1 << 16;
+
+/// Reads the rest of a header (after the magic): the column names.
+fn read_names<R: Read>(reader: &mut R) -> io::Result<Result<Vec<String>, &'static str>> {
+    const SHORT: &str = "the file is shorter than its header";
+    const DAMAGED: &str = "its header is damaged";
+    let mut body = Vec::new();
+    let take = |reader: &mut R, length: usize| -> io::Result<Option<Vec<u8>>> {
+        let mut bytes = vec![0; length];
+        Ok((read_full(reader, &mut bytes)? == length).then_some(bytes))
+    };
+    let Some(count) = take(reader, 4)? else {
+        return Ok(Err(SHORT));
+    };
+    let count = u32::from_le_bytes(count.as_slice().try_into().unwrap_or([0; 4]));
+    let Some(count) = usize::try_from(count).ok().filter(|&c| c <= MAX_COLUMNS) else {
+        return Ok(Err(DAMAGED));
+    };
+    body.extend_from_slice(&u32::to_le_bytes(u32::try_from(count).unwrap_or(0)));
+    let mut names = Vec::with_capacity(count);
+    for _ in 0..count {
+        let Some(length) = take(reader, 2)? else {
+            return Ok(Err(SHORT));
+        };
+        let Some(name) = take(
+            reader,
+            usize::from(u16::from_le_bytes([length[0], length[1]])),
+        )?
+        else {
+            return Ok(Err(SHORT));
+        };
+        body.extend_from_slice(&length);
+        body.extend_from_slice(&name);
+        let Ok(name) = String::from_utf8(name) else {
+            return Ok(Err(DAMAGED));
+        };
+        names.push(name);
+    }
+    let Some(sum) = take(reader, 4)? else {
+        return Ok(Err(SHORT));
+    };
+    if sum != checksum(&body).to_le_bytes() {
+        return Ok(Err(DAMAGED));
+    }
+    Ok(Ok(names))
 }
 
 const fn record_len(width: usize) -> usize {
@@ -101,37 +210,46 @@ pub enum Loaded {
 
 /// Reads the history file at `path` into `store`, leaving out records older
 /// than `oldest` (milliseconds since the epoch) and any that aren't in time
-/// order. The newest records that fit are kept.
+/// order. The newest records that fit are kept. `names` are the metrics the
+/// store's columns hold; the file's columns are matched to them by name.
 ///
 /// # Errors
 /// If the file exists but can't be read at all. Damage inside it isn't an
 /// error: see [`Loaded`].
-pub fn load(path: &Path, hash: u64, store: &mut Store, oldest: u64) -> io::Result<Loaded> {
+pub fn load(path: &Path, names: &[String], store: &mut Store, oldest: u64) -> io::Result<Loaded> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Loaded::Nothing),
         Err(error) => return Err(error),
     };
     let mut reader = BufReader::with_capacity(1 << 16, file);
-    let width = store.width();
 
-    let mut head = [0; HEADER_LEN];
-    if read_full(&mut reader, &mut head)? != HEADER_LEN {
+    let mut magic = [0; 8];
+    if read_full(&mut reader, &mut magic)? != magic.len() {
         return Ok(Loaded::Incompatible("the file is shorter than its header"));
     }
-    if &head[..8] != MAGIC {
-        return Ok(Loaded::Incompatible(
-            "it is not a simple-metrics history file",
-        ));
-    }
-    if head != header(width, hash) {
-        return Ok(Loaded::Incompatible(
-            "it was recorded with a different set of metrics",
-        ));
+    let found = if &magic == MAGIC {
+        read_names(&mut reader)?
+    } else if &magic == LEGACY_MAGIC {
+        legacy_names(&mut reader, names)?
+    } else {
+        Err("it is not a history file this version understands")
+    };
+    let file_names = match found {
+        Ok(file_names) => file_names,
+        Err(reason) => return Ok(Loaded::Incompatible(reason)),
+    };
+    // Where each of today's metrics is in the file's records, if it is.
+    let columns: Vec<Option<usize>> = names
+        .iter()
+        .map(|name| file_names.iter().position(|f| f == name))
+        .collect();
+    if columns.iter().all(Option::is_none) {
+        return Ok(Loaded::Incompatible("none of its metrics are recorded now"));
     }
 
-    let mut buffer = vec![0; record_len(width)];
-    let mut row = vec![0.0; width];
+    let mut buffer = vec![0; record_len(file_names.len())];
+    let mut row = vec![0.0; store.width()];
     let (mut loaded, mut skipped) = (0, 0);
     loop {
         let got = read_full(&mut reader, &mut buffer)?;
@@ -154,8 +272,8 @@ pub fn load(path: &Path, hash: u64, store: &mut Store, oldest: u64) -> io::Resul
         }
         let timestamp = u64::from_le_bytes(buffer[..8].try_into().unwrap_or([0; 8]));
         let (values, _) = buffer[8..body].as_chunks::<8>();
-        for (value, bytes) in row.iter_mut().zip(values) {
-            *value = f64::from_bits(u64::from_le_bytes(*bytes));
+        for (value, column) in row.iter_mut().zip(&columns) {
+            *value = column.map_or(f64::NAN, |c| f64::from_bits(u64::from_le_bytes(values[c])));
         }
         if timestamp >= oldest && store.push(timestamp, &row).is_ok() {
             loaded += 1;
@@ -186,7 +304,7 @@ fn read_full<R: Read>(reader: &mut R, buffer: &mut [u8]) -> io::Result<usize> {
 #[derive(Debug)]
 pub struct Journal {
     path: PathBuf,
-    hash: u64,
+    names: Vec<String>,
     width: usize,
     capacity: usize,
     flush_every: Duration,
@@ -203,19 +321,20 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// Starts a journal at `path` by writing the file afresh from `store`.
+    /// Starts a journal at `path` by writing the file afresh from `store`,
+    /// whose columns hold the metrics `names`.
     ///
     /// # Errors
     /// If the file can't be written: the state directory is wrong or full.
     pub fn start(
         path: PathBuf,
-        hash: u64,
+        names: Vec<String>,
         store: &Store,
         flush_every: Duration,
     ) -> io::Result<Self> {
         let mut journal = Self {
             path,
-            hash,
+            names,
             width: store.width(),
             capacity: store.capacity(),
             flush_every,
@@ -313,7 +432,7 @@ impl Journal {
             .mode(0o600)
             .open(temporary)?;
         let mut writer = BufWriter::with_capacity(1 << 16, file);
-        writer.write_all(&header(self.width, self.hash))?;
+        writer.write_all(&header(&self.names))?;
         let mut encoded = Vec::with_capacity(record_len(self.width));
         for (timestamp, row) in store.records() {
             encoded.clear();
@@ -335,6 +454,14 @@ mod tests {
     use super::*;
 
     const WIDTH: usize = 3;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(ToString::to_string).collect()
+    }
+
+    fn abc() -> Vec<String> {
+        names(&["a", "b", "c"])
+    }
 
     fn store(capacity: usize) -> Store {
         Store::new(NonZeroUsize::new(capacity).unwrap(), WIDTH).unwrap()
@@ -371,14 +498,14 @@ mod tests {
     }
 
     fn write_file(path: &Path, source: &Store) -> Journal {
-        Journal::start(path.to_path_buf(), 7, source, Duration::ZERO).unwrap()
+        Journal::start(path.to_path_buf(), abc(), source, Duration::ZERO).unwrap()
     }
 
     #[test]
     fn a_missing_file_is_a_first_run() {
         let path = dir("missing").join(FILE_NAME);
         let mut into = store(4);
-        assert_eq!(load(&path, 7, &mut into, 0).unwrap(), Loaded::Nothing);
+        assert_eq!(load(&path, &abc(), &mut into, 0).unwrap(), Loaded::Nothing);
         assert!(into.is_empty());
     }
 
@@ -388,7 +515,7 @@ mod tests {
         let source = filled(8, 5);
         write_file(&path, &source);
         let mut into = store(8);
-        let loaded = load(&path, 7, &mut into, 0).unwrap();
+        let loaded = load(&path, &abc(), &mut into, 0).unwrap();
         assert_eq!(
             loaded,
             Loaded::Records {
@@ -412,7 +539,7 @@ mod tests {
         }
         journal.flush_if_due(&source);
         let mut into = store(8);
-        load(&path, 7, &mut into, 0).unwrap();
+        load(&path, &abc(), &mut into, 0).unwrap();
         assert_eq!(contents(&into), contents(&source));
     }
 
@@ -421,12 +548,12 @@ mod tests {
         let path = dir("interval").join(FILE_NAME);
         let mut source = filled(8, 1);
         let mut journal =
-            Journal::start(path.clone(), 7, &source, Duration::from_secs(3600)).unwrap();
+            Journal::start(path.clone(), abc(), &source, Duration::from_secs(3600)).unwrap();
         source.push(2000, &row(2)).unwrap();
         journal.record(2000, &row(2));
         journal.flush_if_due(&source);
         let mut into = store(8);
-        load(&path, 7, &mut into, 0).unwrap();
+        load(&path, &abc(), &mut into, 0).unwrap();
         assert_eq!(into.len(), 1, "the new record is still waiting");
     }
 
@@ -435,7 +562,7 @@ mod tests {
         let path = dir("newest").join(FILE_NAME);
         write_file(&path, &filled(8, 8));
         let mut into = store(3);
-        load(&path, 7, &mut into, 0).unwrap();
+        load(&path, &abc(), &mut into, 0).unwrap();
         let times: Vec<u64> = into.records().map(|(t, _)| t).collect();
         assert_eq!(times, [6000, 7000, 8000]);
     }
@@ -445,7 +572,7 @@ mod tests {
         let path = dir("old").join(FILE_NAME);
         write_file(&path, &filled(8, 6));
         let mut into = store(8);
-        let loaded = load(&path, 7, &mut into, 4000).unwrap();
+        let loaded = load(&path, &abc(), &mut into, 4000).unwrap();
         assert_eq!(
             loaded,
             Loaded::Records {
@@ -465,7 +592,7 @@ mod tests {
         let file = OpenOptions::new().write(true).open(&path).unwrap();
         file.set_len(length - 5).unwrap();
         let mut into = store(8);
-        let loaded = load(&path, 7, &mut into, 0).unwrap();
+        let loaded = load(&path, &abc(), &mut into, 0).unwrap();
         assert_eq!(
             loaded,
             Loaded::Records {
@@ -481,11 +608,11 @@ mod tests {
         let path = dir("flipped").join(FILE_NAME);
         write_file(&path, &filled(8, 5));
         let mut bytes = fs::read(&path).unwrap();
-        let second = HEADER_LEN + record_len(WIDTH) + 10; // inside record 2
+        let second = header(&abc()).len() + record_len(WIDTH) + 10; // inside record 2
         bytes[second] ^= 0xff;
         fs::write(&path, bytes).unwrap();
         let mut into = store(8);
-        let loaded = load(&path, 7, &mut into, 0).unwrap();
+        let loaded = load(&path, &abc(), &mut into, 0).unwrap();
         assert_eq!(
             loaded,
             Loaded::Records {
@@ -496,21 +623,118 @@ mod tests {
         );
     }
 
+    /// Loads the file at `path` into a store whose columns are `wanted`.
+    fn load_as(path: &Path, wanted: &[&str], capacity: usize) -> (Loaded, Store) {
+        let wanted = names(wanted);
+        let mut into = Store::new(NonZeroUsize::new(capacity).unwrap(), wanted.len()).unwrap();
+        let loaded = load(path, &wanted, &mut into, 0).unwrap();
+        (loaded, into)
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|v| v.to_bits()).collect()
+    }
+
     #[test]
-    fn history_from_other_metrics_is_ignored_not_misread() {
-        let path = dir("hash").join(FILE_NAME);
+    fn a_metric_added_since_reads_as_a_gap_in_the_old_records() {
+        let path = dir("added").join(FILE_NAME);
+        write_file(&path, &filled(8, 3));
+        let (loaded, into) = load_as(&path, &["a", "b", "new", "c"], 8);
+        assert!(matches!(loaded, Loaded::Records { loaded: 3, .. }));
+        let (time, row) = into.latest().unwrap();
+        assert_eq!(time, 3000);
+        assert_eq!(row[..2], [3.0, 1.5]);
+        assert!(row[2].is_nan(), "the new metric has no history");
+        assert!(row[3].is_nan());
+    }
+
+    #[test]
+    fn a_metric_no_longer_recorded_is_dropped_and_order_does_not_matter() {
+        let path = dir("removed").join(FILE_NAME);
+        write_file(&path, &filled(8, 2));
+        let (loaded, into) = load_as(&path, &["b", "a"], 8);
+        assert!(matches!(loaded, Loaded::Records { loaded: 2, .. }));
+        assert_eq!(bits(into.latest().unwrap().1), bits(&[1.0, 2.0]));
+    }
+
+    #[test]
+    fn the_file_written_after_an_upgrade_has_the_new_columns() {
+        let path = dir("upgrade").join(FILE_NAME);
+        write_file(&path, &filled(8, 3));
+        let wanted = names(&["a", "b", "c", "d"]);
+        let (_, upgraded) = load_as(&path, &["a", "b", "c", "d"], 8);
+        Journal::start(path.clone(), wanted, &upgraded, Duration::ZERO).unwrap();
+        let (_, again) = load_as(&path, &["a", "b", "c", "d"], 8);
+        assert_eq!(contents(&again), contents(&upgraded));
+        // And the old columns are intact in it, not just gaps.
+        assert_eq!(again.latest().unwrap().1[0], 3.0);
+    }
+
+    #[test]
+    fn history_with_nothing_in_common_is_ignored() {
+        let path = dir("nothing-shared").join(FILE_NAME);
         write_file(&path, &filled(4, 3));
-        let mut into = store(4);
-        assert!(matches!(
-            load(&path, 8, &mut into, 0).unwrap(),
-            Loaded::Incompatible(_)
-        ));
+        let (loaded, into) = load_as(&path, &["x", "y"], 4);
+        assert!(matches!(loaded, Loaded::Incompatible(_)));
         assert!(into.is_empty());
-        let mut wider = Store::new(NonZeroUsize::new(4).unwrap(), WIDTH + 1).unwrap();
-        assert!(matches!(
-            load(&path, 7, &mut wider, 0).unwrap(),
-            Loaded::Incompatible(_)
-        ));
+    }
+
+    #[test]
+    fn a_damaged_header_is_ignored() {
+        let path = dir("header").join(FILE_NAME);
+        write_file(&path, &filled(4, 3));
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[8 + 4 + 2] ^= 0xff; // inside the first name
+        fs::write(&path, bytes).unwrap();
+        let (loaded, into) = load_as(&path, &["a", "b", "c"], 4);
+        assert!(matches!(loaded, Loaded::Incompatible(_)));
+        assert!(into.is_empty());
+    }
+
+    // TODO: delete with the rest of the legacy support (see `LEGACY_MAGIC`).
+    #[test]
+    fn a_first_format_file_is_read_and_upgraded() {
+        let net = names(&["net_eth0_rx_bytes_per_sec", "net_eth0_tx_bytes_per_sec"]);
+        let old: Vec<String> = LEGACY_FIXED
+            .iter()
+            .map(ToString::to_string)
+            .chain(net.clone())
+            .collect();
+        let width = old.len();
+        let mut bytes = LEGACY_MAGIC.to_vec();
+        bytes.extend_from_slice(&u32::try_from(width).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&names_hash(&old).to_le_bytes());
+        for t in 1..=3_u32 {
+            let values: Vec<f64> = (0..u32::try_from(width).unwrap())
+                .map(|i| f64::from(t) * 10.0 + f64::from(i))
+                .collect();
+            encode(&mut bytes, u64::from(t) * 1000, &values);
+        }
+        let path = dir("legacy").join(FILE_NAME);
+        fs::write(&path, bytes).unwrap();
+
+        // Today's metrics: the old ones, two new percentages, the same network ones.
+        let mut today = names(&LEGACY_FIXED);
+        today.insert(4, "mem_used_percent".to_owned());
+        today.insert(5, "swap_used_percent".to_owned());
+        today.extend(net);
+        let refs: Vec<&str> = today.iter().map(String::as_str).collect();
+        let (loaded, into) = load_as(&path, &refs, 8);
+        assert!(matches!(loaded, Loaded::Records { loaded: 3, .. }));
+        let row = into.latest().unwrap().1;
+        assert_eq!(row[0], 30.0); // cpu_percent
+        assert_eq!(row[3], 33.0); // swap_used_bytes
+        assert!(
+            row[4].is_nan() && row[5].is_nan(),
+            "the new metrics are gaps"
+        );
+        assert_eq!(row[6], 34.0); // cpu_temp_celsius
+        assert_eq!(row[8], 36.0); // last network column
+
+        // A first-format file recorded for other interfaces is still refused.
+        let other = ["cpu_percent", "net_wg0_rx_bytes_per_sec"];
+        let (loaded, _) = load_as(&path, &other, 8);
+        assert!(matches!(loaded, Loaded::Incompatible(_)));
     }
 
     #[test]
@@ -519,12 +743,12 @@ mod tests {
         fs::write(&path, "hello, this is not a history file at all").unwrap();
         let mut into = store(4);
         assert!(matches!(
-            load(&path, 7, &mut into, 0).unwrap(),
+            load(&path, &abc(), &mut into, 0).unwrap(),
             Loaded::Incompatible(_)
         ));
         fs::write(&path, "tiny").unwrap();
         assert!(matches!(
-            load(&path, 7, &mut into, 0).unwrap(),
+            load(&path, &abc(), &mut into, 0).unwrap(),
             Loaded::Incompatible(_)
         ));
     }
@@ -532,13 +756,13 @@ mod tests {
     #[test]
     fn records_out_of_time_order_are_skipped() {
         let path = dir("order").join(FILE_NAME);
-        let mut bytes = header(WIDTH, 7).to_vec();
+        let mut bytes = header(&abc());
         for t in [5000, 6000, 5500, 7000] {
             encode(&mut bytes, t, &row(1));
         }
         fs::write(&path, bytes).unwrap();
         let mut into = store(8);
-        let loaded = load(&path, 7, &mut into, 0).unwrap();
+        let loaded = load(&path, &abc(), &mut into, 0).unwrap();
         assert_eq!(
             loaded,
             Loaded::Records {
@@ -561,11 +785,11 @@ mod tests {
         }
         let size = usize::try_from(fs::metadata(&path).unwrap().len()).unwrap();
         assert!(
-            size <= HEADER_LEN + 9 * record_len(WIDTH),
+            size <= header(&abc()).len() + 9 * record_len(WIDTH),
             "the file should stay near twice the capacity, not hold all 20 ({size})"
         );
         let mut into = store(4);
-        load(&path, 7, &mut into, 0).unwrap();
+        load(&path, &abc(), &mut into, 0).unwrap();
         assert_eq!(contents(&into), contents(&source));
     }
 
@@ -581,11 +805,11 @@ mod tests {
             .set_len(length - 3)
             .unwrap();
         let mut recovered = store(8);
-        load(&path, 7, &mut recovered, 0).unwrap();
+        load(&path, &abc(), &mut recovered, 0).unwrap();
         write_file(&path, &recovered);
         let mut again = store(8);
         assert_eq!(
-            load(&path, 7, &mut again, 0).unwrap(),
+            load(&path, &abc(), &mut again, 0).unwrap(),
             Loaded::Records {
                 loaded: 3,
                 skipped: 0,
@@ -627,20 +851,7 @@ mod tests {
         );
         journal.flush_if_due(&source); // rewrites whole
         let mut into = store(8);
-        load(&path, 7, &mut into, 0).unwrap();
+        load(&path, &abc(), &mut into, 0).unwrap();
         assert_eq!(contents(&into), contents(&source));
-    }
-
-    #[test]
-    fn the_schema_hash_depends_on_the_names_and_their_order() {
-        let a = schema_hash(&Schema::new(&["eth0".to_owned(), "wg0".to_owned()]));
-        let b = schema_hash(&Schema::new(&["wg0".to_owned(), "eth0".to_owned()]));
-        let c = schema_hash(&Schema::new(&["eth0".to_owned()]));
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-        assert_eq!(
-            a,
-            schema_hash(&Schema::new(&["eth0".to_owned(), "wg0".to_owned()]))
-        );
     }
 }

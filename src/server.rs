@@ -158,7 +158,7 @@ mod tests {
         let schema = Schema::new(&["eth0".to_owned()]);
         let store = Store::new(NonZeroUsize::new(4).unwrap(), schema.len()).unwrap();
         let shared = Shared::new(schema, Duration::from_secs(5), store);
-        shared.write().push(1000, &[1.0; 7]).unwrap();
+        shared.write().push(1000, &[1.0; 9]).unwrap();
         shared
     }
 

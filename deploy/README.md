@@ -99,11 +99,11 @@ so on for the bridges). The list it settled on is in the collector's log
 - An interface that appears **after** the collector started isn't charted
   until it restarts (`./sms apply` doesn't restart it if nothing changed; use
   `ssh <user>@<host> docker restart simple-metrics-collector`).
-- If the set of interfaces differs after a restart, **the saved history is
-  discarded** and starts afresh, because the history file belongs to one exact
-  set of metrics. Ignoring the interfaces that come and go (`veth`) is what
-  keeps it stable. If you need it absolutely fixed, list the interfaces
-  instead of using `all`.
+- If the set of interfaces differs after a restart, the saved history is
+  matched to the new set by name: new interfaces start with a gap and removed
+  ones lose their saved values; the rest is kept. Ignoring the interfaces that
+  come and go (`veth`) keeps the charts tidy. If you need it absolutely fixed,
+  list the interfaces instead of using `all`.
 - Each interface adds about 2 MB of memory; the collector's container is
   limited to 256 MB, enough for the fixed metrics and dozens of interfaces
   (at most 64 are charted).

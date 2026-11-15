@@ -20,11 +20,13 @@ pub struct Schema {
 }
 
 /// The metrics that don't depend on the configured interfaces, in order.
-const FIXED: [(&str, &str, &str); 5] = [
+const FIXED: [(&str, &str, &str); 7] = [
     ("cpu_percent", "CPU", "%"),
     ("load1", "Load (1 min)", ""),
     ("mem_used_bytes", "Memory used", "bytes"),
     ("swap_used_bytes", "Swap used", "bytes"),
+    ("mem_used_percent", "Memory used %", "%"),
+    ("swap_used_percent", "Swap used %", "%"),
     ("cpu_temp_celsius", "CPU temperature", "°C"),
 ];
 
@@ -113,6 +115,8 @@ mod tests {
                 "load1",
                 "mem_used_bytes",
                 "swap_used_bytes",
+                "mem_used_percent",
+                "swap_used_percent",
                 "cpu_temp_celsius",
                 "net_eth0_rx_bytes_per_sec",
                 "net_eth0_tx_bytes_per_sec",
@@ -120,7 +124,7 @@ mod tests {
                 "net_wg0_tx_bytes_per_sec",
             ]
         );
-        assert_eq!(schema.len(), 9);
+        assert_eq!(schema.len(), 11);
         assert!(!schema.is_empty());
     }
 

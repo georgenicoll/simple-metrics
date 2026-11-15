@@ -111,7 +111,7 @@ fn json_output_is_the_daemons_reply() {
     let out = daemon.smq(&["--json", "info"]);
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["ok"], true);
-    assert_eq!(value["metrics"], 15);
+    assert_eq!(value["metrics"], 17);
 }
 
 #[test]

@@ -22,8 +22,12 @@ pub struct CpuTimes {
 pub struct Memory {
     /// Memory in use by programs, not counting reclaimable cache.
     pub used: u64,
+    /// Total physical memory.
+    pub total: u64,
     /// Swap space in use.
     pub swap_used: u64,
+    /// Total swap space (zero when the machine has none).
+    pub swap_total: u64,
 }
 
 /// One interface's cumulative byte counters from `/proc/net/dev`.
@@ -136,7 +140,9 @@ pub fn parse_memory(meminfo: &str) -> Option<Memory> {
     let swap_free = kib("SwapFree")?;
     Some(Memory {
         used: total.saturating_sub(available).saturating_mul(1024),
+        total: total.saturating_mul(1024),
         swap_used: swap_total.saturating_sub(swap_free).saturating_mul(1024),
+        swap_total: swap_total.saturating_mul(1024),
     })
 }
 
@@ -263,6 +269,8 @@ mod tests {
         let memory = parse_memory(text).unwrap();
         assert_eq!(memory.used, 600 * 1024);
         assert_eq!(memory.swap_used, 300 * 1024);
+        assert_eq!(memory.total, 1000 * 1024);
+        assert_eq!(memory.swap_total, 500 * 1024);
     }
 
     #[test]

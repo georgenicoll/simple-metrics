@@ -504,9 +504,9 @@ mod tests {
         shared
     }
 
-    /// A full row for the schema above: 5 fixed metrics and eth0's two rates.
+    /// A full row for the schema above: 7 fixed metrics and eth0's two rates.
     fn row(seed: f64) -> Vec<f64> {
-        (0..7).map(|i| seed + f64::from(i)).collect()
+        (0..9).map(|i| seed + f64::from(i)).collect()
     }
 
     fn newlines(bytes: &[u8]) -> usize {
@@ -536,7 +536,7 @@ mod tests {
     /// `i`th record (1-based).
     fn steady(n: u32) -> Shared {
         let rows: Vec<(u64, Vec<f64>)> = (1..=n)
-            .map(|i| (u64::from(i) * 5000, vec![f64::from(i); 7]))
+            .map(|i| (u64::from(i) * 5000, vec![f64::from(i); 9]))
             .collect();
         let borrowed: Vec<(u64, &[f64])> = rows.iter().map(|(t, r)| (*t, r.as_slice())).collect();
         shared_with(&borrowed)
@@ -735,20 +735,20 @@ mod tests {
         assert_eq!(response["interval_ms"], 5000);
         assert_eq!(response["capacity"], 64);
         assert_eq!(response["len"], 2);
-        assert_eq!(response["metrics"], 7);
+        assert_eq!(response["metrics"], 9);
     }
 
     #[test]
     fn metrics_lists_names_labels_and_units_in_record_order() {
         let response = respond_to(&Request::Metrics, &shared_with(&[]));
         let metrics = response["metrics"].as_array().unwrap();
-        assert_eq!(metrics.len(), 7);
+        assert_eq!(metrics.len(), 9);
         assert_eq!(
             metrics[0],
             json!({"name":"cpu_percent","label":"CPU","unit":"%"})
         );
-        assert_eq!(metrics[5]["name"], "net_eth0_rx_bytes_per_sec");
-        assert_eq!(metrics[5]["unit"], "bytes/s");
+        assert_eq!(metrics[7]["name"], "net_eth0_rx_bytes_per_sec");
+        assert_eq!(metrics[7]["unit"], "bytes/s");
     }
 
     #[test]
@@ -766,13 +766,13 @@ mod tests {
         assert_eq!(response["timestamp"], 2000);
         assert_eq!(response["values"]["cpu_percent"], 10.0);
         assert_eq!(response["values"]["load1"], 11.0);
-        assert_eq!(response["values"]["net_eth0_tx_bytes_per_sec"], 16.0);
+        assert_eq!(response["values"]["net_eth0_tx_bytes_per_sec"], 18.0);
     }
 
     #[test]
     fn a_value_that_could_not_be_measured_is_null() {
         let mut gappy = row(1.0);
-        gappy[4] = f64::NAN;
+        gappy[6] = f64::NAN;
         let shared = shared_with(&[(1000, &gappy)]);
         let response = respond_to(&Request::Latest, &shared);
         assert!(response["values"]["cpu_temp_celsius"].is_null());
@@ -789,11 +789,11 @@ mod tests {
         assert_eq!(response["timestamps"], json!([1000, 2000, 3000]));
         assert!(response.get("step_ms").is_none(), "not downsampled");
         let series = response["series"].as_object().unwrap();
-        assert_eq!(series.len(), 7);
+        assert_eq!(series.len(), 9);
         assert_eq!(series["cpu_percent"], json!([0.0, 10.0, 20.0]));
         assert_eq!(
             series["net_eth0_tx_bytes_per_sec"],
-            json!([6.0, 16.0, 26.0])
+            json!([8.0, 18.0, 28.0])
         );
         for column in series.values() {
             assert_eq!(column.as_array().unwrap().len(), 3);
@@ -811,7 +811,7 @@ mod tests {
     fn read_writes_gaps_as_null_and_stays_valid_json() {
         let mut gappy = row(1.0);
         gappy[0] = f64::NAN;
-        gappy[6] = f64::INFINITY;
+        gappy[8] = f64::INFINITY;
         let shared = shared_with(&[(1000, &gappy)]);
         let response = respond_to(&everything(), &shared);
         assert_eq!(response["series"]["cpu_percent"], json!([null]));
