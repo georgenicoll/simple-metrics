@@ -70,8 +70,7 @@ impl Readings {
                 .and_then(parse_temperature),
             net: read("proc/net/dev")
                 .as_deref()
-                .map(parse_net_dev)
-                .unwrap_or_default(),
+                .map_or_default(parse_net_dev),
         }
     }
 }
@@ -81,8 +80,7 @@ impl Readings {
 #[must_use]
 pub fn interface_names(root: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_to_string(root.join("proc/net/dev"))
-        .map(|text| parse_net_dev(&text).into_keys().collect())
-        .unwrap_or_default();
+        .map_or_default(|text| parse_net_dev(&text).into_keys().collect());
     names.sort();
     names
 }
