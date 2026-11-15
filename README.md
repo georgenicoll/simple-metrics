@@ -22,6 +22,8 @@ Every record holds the same set of values, taken together:
 | `load1` | | `/proc/loadavg` (1-minute load average) |
 | `mem_used_bytes` | bytes | `/proc/meminfo` (`MemTotal - MemAvailable`, so reclaimable cache doesn't count as used) |
 | `swap_used_bytes` | bytes | `/proc/meminfo` |
+| `mem_used_percent` | % | `mem_used_bytes` as a share of `MemTotal` |
+| `swap_used_percent` | % | `swap_used_bytes` as a share of `SwapTotal` (no value on a machine without swap) |
 | `cpu_temp_celsius` | °C | `/sys/class/thermal/thermal_zone0/temp` |
 | `net_<iface>_rx_bytes_per_sec` | bytes/s | `/proc/net/dev` (change since the last sample) |
 | `net_<iface>_tx_bytes_per_sec` | bytes/s | `/proc/net/dev` |
@@ -165,13 +167,13 @@ Things to know:
 
 - **The set is fixed while the daemon runs.** An interface that appears later
   isn't charted until the daemon restarts; one that goes away is a gap.
-- **Changing the set starts the history afresh.** The history file records the
-  metrics it holds (see "Keeping the history"), so if the set of interfaces
-  differs after a restart, the saved history is ignored. That is why the
-  virtual interfaces that come and go are worth ignoring: they would change
-  the set, and so reset the history, every time one was added or removed
-  before a restart. If the set must stay stable, name the interfaces instead
-  of using `all`.
+- **Changing the set keeps the history of what remains.** The history file
+  names the metrics it holds (see "Keeping the history"), so after a restart
+  the saved history is matched to the current metrics by name. An interface
+  that is new has no history (a gap in the old records); one that is gone
+  loses its saved values. The virtual interfaces that come and go are still
+  worth ignoring, so the charts don't fill with short-lived ones. If the set
+  must stay stable, name the interfaces instead of using `all`.
 - **Each interface costs memory.** Two metrics (received and sent bytes per
   second), about 2 MB at the default 5 second interval and 7 days: charting 10
   interfaces takes about 35 MB in all, against 15 MB for the fixed metrics
@@ -198,9 +200,13 @@ for as long as the daemon was down, not an empty history.
   flush interval's records. Each record has a checksum, so a torn or damaged
   end of the file costs only the damaged records; the rest load, and the file
   is repaired.
-- **Safe to change settings.** The file records the metrics it holds. If the
-  set changes (different `--interface`s), it is ignored and started afresh,
-  never misread. A different `--interval` or `--retention` is fine: only the
+- **Safe to change settings and to upgrade.** The file's header names the
+  metrics it holds, and on load each is matched to the metrics being recorded
+  by name: a metric added since (a new release, or another `--interface`) is
+  a gap in the old records, and one no longer recorded is dropped. The file
+  is rewritten at every start, so it is in the current layout from then on.
+  A file that shares no metric with the current ones, or isn't a history file
+  this version understands, is ignored and started afresh. A different `--interval` or `--retention` is fine: only the
   newest records that fit are loaded, and any older than the retention are
   dropped.
 - **A clock that hasn't been set.** A Pi has no battery clock, so after a reboot

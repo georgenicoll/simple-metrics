@@ -167,7 +167,7 @@ fn info_describes_the_collector() {
     assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(info["interval_ms"], 100);
     assert_eq!(info["capacity"], 100); // 10 s at 100 ms
-    assert_eq!(info["metrics"], 15); // 5 fixed + 2 for each of 5 interfaces
+    assert_eq!(info["metrics"], 17); // 7 fixed + 2 for each of 5 interfaces
 }
 
 #[test]
@@ -180,14 +180,16 @@ fn metrics_lists_the_default_metrics() {
         .iter()
         .map(|m| m["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 15);
+    assert_eq!(names.len(), 17);
     assert_eq!(
-        &names[..5],
+        &names[..7],
         [
             "cpu_percent",
             "load1",
             "mem_used_bytes",
             "swap_used_bytes",
+            "mem_used_percent",
+            "swap_used_percent",
             "cpu_temp_celsius"
         ]
     );
@@ -207,7 +209,7 @@ fn metrics_lists_the_default_metrics() {
 fn the_interface_setting_changes_the_metrics() {
     let daemon = Daemon::start(&["--interface", "eth0", "--interface", "wg0"]);
     let info = daemon.ask(&json!({"op": "info"}));
-    assert_eq!(info["metrics"], 9);
+    assert_eq!(info["metrics"], 11);
     let names = daemon.ask(&json!({"op": "metrics"}));
     assert!(names.to_string().contains("net_wg0_tx_bytes_per_sec"));
     assert!(!names.to_string().contains("wlan1"));
@@ -227,7 +229,7 @@ fn all_interfaces_charts_what_the_machine_has_except_lo_and_the_ignored() {
     for left_out in ["wlan0", "wlan1", "net_lo_"] {
         assert!(!names.contains(left_out), "{left_out}");
     }
-    assert_eq!(daemon.ask(&json!({"op": "info"}))["metrics"], 11); // 5 + 2 * 3
+    assert_eq!(daemon.ask(&json!({"op": "info"}))["metrics"], 13); // 7 + 2 * 3
 }
 
 #[test]
@@ -241,6 +243,8 @@ fn latest_reports_the_values_in_the_fixture_files() {
     // Values are floats in the JSON, so compare them as floats.
     assert_eq!(values["mem_used_bytes"].as_f64(), Some(414_113_792.0)); // (3886840 - 3482432) KiB
     assert_eq!(values["swap_used_bytes"].as_f64(), Some(0.0));
+    let mem_pct = values["mem_used_percent"].as_f64().unwrap();
+    assert!((mem_pct - 100.0 * 404_408.0 / 3_886_840.0).abs() < 1e-9);
     // The fixture files never change, so nothing moved between samples:
     // network rates are zero...
     assert_eq!(values["net_eth0_rx_bytes_per_sec"], 0.0);
@@ -264,7 +268,7 @@ fn read_returns_aligned_columns_oldest_first_with_a_gap_at_the_start() {
     );
 
     let series = reply["series"].as_object().unwrap();
-    assert_eq!(series.len(), 15);
+    assert_eq!(series.len(), 17);
     for (name, column) in series {
         assert_eq!(column.as_array().unwrap().len(), timestamps.len(), "{name}");
     }
@@ -427,7 +431,7 @@ fn a_missing_proc_tree_gives_gaps_not_a_crash() {
     daemon.wait_for_records(2);
     let latest = daemon.ask(&json!({"op": "latest"}));
     let values = latest["values"].as_object().unwrap();
-    assert_eq!(values.len(), 15);
+    assert_eq!(values.len(), 17);
     assert!(values.values().all(Value::is_null), "{values:?}");
 }
 
@@ -680,7 +684,20 @@ impl StateDir {
     /// How many complete records the history file holds now.
     fn records_on_disk(&self, width: usize) -> usize {
         let length = fs::metadata(self.file()).map_or(0, |m| usize::try_from(m.len()).unwrap());
-        length.saturating_sub(20) / (8 + 8 * width + 4)
+        // The header names the columns: magic, count, then length-prefixed names, a checksum.
+        let bytes = fs::read(self.file()).unwrap_or_default();
+        let count = bytes
+            .get(8..12)
+            .map_or(0, |c| u32::from_le_bytes(c.try_into().unwrap()));
+        let mut header = 12;
+        for _ in 0..count {
+            let length = bytes.get(header..header + 2).map_or(0, |l| {
+                usize::from(u16::from_le_bytes(l.try_into().unwrap()))
+            });
+            header += 2 + length;
+        }
+        header += 4;
+        length.saturating_sub(header) / (8 + 8 * width + 4)
     }
 }
 
@@ -748,7 +765,7 @@ fn the_history_file_is_private_and_stays_within_about_twice_the_capacity() {
     let mut largest = 0;
     let watching = Instant::now();
     while watching.elapsed() < Duration::from_secs(6) {
-        largest = largest.max(state.records_on_disk(15));
+        largest = largest.max(state.records_on_disk(17));
         thread::sleep(Duration::from_millis(20));
     }
     assert!(largest > 40, "it should grow past the capacity: {largest}");
@@ -756,7 +773,7 @@ fn the_history_file_is_private_and_stays_within_about_twice_the_capacity() {
         largest <= 84,
         "then be rewritten, not grow for ever: {largest}"
     );
-    assert!(state.records_on_disk(15) >= 40);
+    assert!(state.records_on_disk(17) >= 40);
     assert_eq!(info_len(&daemon), 40);
     assert_eq!(
         fs::metadata(state.file()).unwrap().permissions().mode() & 0o777,
@@ -766,11 +783,11 @@ fn the_history_file_is_private_and_stays_within_about_twice_the_capacity() {
 }
 
 #[test]
-fn history_recorded_for_other_interfaces_is_ignored_not_misread() {
+fn history_recorded_for_other_interfaces_keeps_the_metrics_in_common() {
     let state = StateDir::new("schema");
     let first = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "100ms"]);
     first.wait_for_records(5);
-    wait_until(|| state.records_on_disk(15) >= 5, "records on disk");
+    wait_until(|| state.records_on_disk(17) >= 5, "records on disk");
     drop(first);
     let second = Daemon::start(&[
         "--state-dir",
@@ -783,9 +800,13 @@ fn history_recorded_for_other_interfaces_is_ignored_not_misread() {
     let metrics = second.ask(&json!({"op": "info"}))["metrics"]
         .as_u64()
         .unwrap();
-    assert_eq!(metrics, 7);
-    // Every record it has is one of its own (7 values), none misread.
+    assert_eq!(metrics, 9);
+    // The first run's history carries over for the metrics they share
+    // (everything but the interfaces that are gone), none misread.
+    assert!(info_len(&second) >= 5);
     let read = second.ask(&json!({"op": "read"}));
+    assert!(read["series"].get("net_wg0_rx_bytes_per_sec").is_none());
+    assert!(read["series"]["cpu_percent"].as_array().unwrap().len() >= 5);
     assert!(
         read["series"].as_object().unwrap().values().all(|v| {
             v.as_array().unwrap().len() == read["timestamps"].as_array().unwrap().len()
@@ -798,7 +819,7 @@ fn a_damaged_end_of_the_file_costs_only_the_damage() {
     let state = StateDir::new("torn");
     let first = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "100ms"]);
     first.wait_for_records(6);
-    wait_until(|| state.records_on_disk(15) >= 6, "records on disk");
+    wait_until(|| state.records_on_disk(17) >= 6, "records on disk");
     drop(first);
     let length = fs::metadata(state.file()).unwrap().len();
     fs::OpenOptions::new()
@@ -833,7 +854,7 @@ fn a_clock_behind_the_saved_history_holds_recording_back() {
     }
     persist::Journal::start(
         state.file(),
-        persist::schema_hash(&schema),
+        schema.metrics().iter().map(|m| m.name.clone()).collect(),
         &store,
         Duration::from_secs(60),
     )

@@ -182,7 +182,7 @@ fn open_history(
     };
     fs::create_dir_all(dir).map_err(state_error)?;
     let path = dir.join(persist::FILE_NAME);
-    let hash = persist::schema_hash(schema);
+    let names: Vec<String> = schema.metrics().iter().map(|m| m.name.clone()).collect();
     // Anything older than the retention is dropped as it is loaded - unless
     // the clock looks unset (a Pi that hasn't reached the network yet), when
     // it would drop everything.
@@ -192,7 +192,7 @@ fn open_history(
     } else {
         0
     };
-    match persist::load(&path, hash, store, oldest).map_err(state_error)? {
+    match persist::load(&path, &names, store, oldest).map_err(state_error)? {
         Loaded::Nothing => crate::log(format_args!("history: none saved yet in {}", dir.display())),
         Loaded::Records {
             loaded,
@@ -221,7 +221,7 @@ fn open_history(
         )),
     }
     let newest = store.latest().map(|(timestamp, _)| timestamp);
-    let journal = Journal::start(path, hash, store, config.flush_interval).map_err(state_error)?;
+    let journal = Journal::start(path, names, store, config.flush_interval).map_err(state_error)?;
     Ok((journal, newest))
 }
 

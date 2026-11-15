@@ -50,6 +50,16 @@ impl Sampler {
         row.push(readings.load1.unwrap_or(f64::NAN));
         row.push(readings.memory.map_or(f64::NAN, |m| to_f64(m.used)));
         row.push(readings.memory.map_or(f64::NAN, |m| to_f64(m.swap_used)));
+        row.push(
+            readings
+                .memory
+                .map_or(f64::NAN, |m| percent(m.used, m.total)),
+        );
+        row.push(
+            readings
+                .memory
+                .map_or(f64::NAN, |m| percent(m.swap_used, m.swap_total)),
+        );
         row.push(readings.temperature.unwrap_or(f64::NAN));
 
         for interface in &self.interfaces {
@@ -78,6 +88,15 @@ impl Sampler {
 #[allow(clippy::cast_precision_loss)] // counters stay far below 2^53 in practice
 fn to_f64(value: u64) -> f64 {
     value as f64
+}
+
+/// `part` as a percentage of `whole`; not a number when there is no whole
+/// (a machine without swap).
+fn percent(part: u64, whole: u64) -> f64 {
+    if whole == 0 {
+        return f64::NAN;
+    }
+    (100.0 * to_f64(part) / to_f64(whole)).clamp(0.0, 100.0)
 }
 
 /// The percentage of CPU time spent busy between two readings.
@@ -122,10 +141,12 @@ mod tests {
     const LOAD: usize = 1;
     const MEM: usize = 2;
     const SWAP: usize = 3;
-    const TEMP: usize = 4;
-    const ETH0_RX: usize = 5;
-    const ETH0_TX: usize = 6;
-    const WG0_RX: usize = 7;
+    const MEM_PCT: usize = 4;
+    const SWAP_PCT: usize = 5;
+    const TEMP: usize = 6;
+    const ETH0_RX: usize = 7;
+    const ETH0_TX: usize = 8;
+    const WG0_RX: usize = 9;
 
     fn readings(busy: u64, total: u64, eth0: (u64, u64)) -> Readings {
         Readings {
@@ -133,7 +154,9 @@ mod tests {
             load1: Some(0.5),
             memory: Some(Memory {
                 used: 1000,
+                total: 4000,
                 swap_used: 200,
+                swap_total: 800,
             }),
             temperature: Some(50.0),
             net: HashMap::from([(
@@ -153,7 +176,7 @@ mod tests {
     #[test]
     fn a_row_has_a_value_for_every_metric() {
         let row = sampler().sample(&readings(0, 0, (0, 0)), 5.0);
-        assert_eq!(row.len(), 5 + 2 * 2);
+        assert_eq!(row.len(), 7 + 2 * 2);
     }
 
     #[test]
@@ -162,6 +185,8 @@ mod tests {
         assert!((row[LOAD] - 0.5).abs() < f64::EPSILON);
         assert!((row[MEM] - 1000.0).abs() < f64::EPSILON);
         assert!((row[SWAP] - 200.0).abs() < f64::EPSILON);
+        assert!((row[MEM_PCT] - 25.0).abs() < f64::EPSILON);
+        assert!((row[SWAP_PCT] - 25.0).abs() < f64::EPSILON);
         assert!((row[TEMP] - 50.0).abs() < f64::EPSILON);
     }
 
@@ -258,7 +283,7 @@ mod tests {
     #[test]
     fn unreadable_gauges_are_gaps() {
         let row = sampler().sample(&Readings::default(), 5.0);
-        assert_eq!(row.len(), 9);
+        assert_eq!(row.len(), 11);
         assert!(row.iter().all(|v| v.is_nan()));
     }
 }
