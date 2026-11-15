@@ -215,7 +215,7 @@ impl Store {
         } else {
             // Full: the oldest record's slot becomes the newest.
             let slot = self.head;
-            self.head = (self.head + 1) % self.capacity.get();
+            self.head = (self.head + 1) % self.capacity;
             slot
         };
         self.timestamps[slot] = timestamp;
@@ -416,7 +416,7 @@ impl Store {
 
     /// The slot holding the `i`th oldest record (0 = oldest).
     fn slot(&self, i: usize) -> usize {
-        (self.head + i) % self.capacity.get()
+        (self.head + i) % self.capacity
     }
 }
 

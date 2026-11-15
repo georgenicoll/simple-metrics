@@ -401,18 +401,15 @@ fn render_info(response: &Value) -> String {
 }
 
 fn render_metrics(response: &Value) -> String {
-    let rows: Vec<Vec<String>> = response["metrics"]
-        .as_array()
-        .map(|list| {
-            list.iter()
-                .map(|m| {
-                    ["name", "unit", "label"]
-                        .map(|k| m[k].as_str().unwrap_or("").to_owned())
-                        .to_vec()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let rows: Vec<Vec<String>> = response["metrics"].as_array().map_or_default(|list| {
+        list.iter()
+            .map(|m| {
+                ["name", "unit", "label"]
+                    .map(|k| m[k].as_str().unwrap_or("").to_owned())
+                    .to_vec()
+            })
+            .collect()
+    });
     table(&["name", "unit", "label"], &rows)
 }
 
@@ -420,15 +417,12 @@ fn render_latest(response: &Value) -> String {
     let Some(timestamp) = response["timestamp"].as_u64() else {
         return "nothing has been recorded yet".to_owned();
     };
-    let rows: Vec<Vec<String>> = response["values"]
-        .as_object()
-        .map(|values| {
-            values
-                .iter()
-                .map(|(name, v)| vec![name.clone(), number(v)])
-                .collect()
-        })
-        .unwrap_or_default();
+    let rows: Vec<Vec<String>> = response["values"].as_object().map_or_default(|values| {
+        values
+            .iter()
+            .map(|(name, v)| vec![name.clone(), number(v)])
+            .collect()
+    });
     format!(
         "at {}\n{}",
         iso(timestamp),
