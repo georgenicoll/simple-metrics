@@ -9,16 +9,16 @@
 #   ./sms output
 #   ./sms destroy
 #
-# Configuration:
-#   SMS_CONFIG     path to your private .tfvars file for the machine (host,
-#                  ssh user, image...). Default: deploy/server.tfvars, which
-#                  is not checked in - copy deploy/example.server.tfvars. To
-#                  deploy to a second machine, give it its own file and point
-#                  SMS_CONFIG at it: its state is kept apart, named after the
-#                  file (other.tfvars -> other.tfstate).
-#   SMS_STATE_DIR  optional directory to keep state in, instead of deploy/.
-#                  Private and backed up, if you care about it: it lists what
-#                  was deployed where.
+# To deploy to a different machine, name its config with --config (anywhere on
+# the command line):
+#
+#   ./sms plan  --config=gorilla      # deploy/gorilla.tfvars, gorilla.tfstate
+#   ./sms apply --config=gorilla
+#
+# Without it the name is "server": deploy/server.tfvars and server.tfstate.
+# The config (host, ssh user, image...) is private and not checked in: copy
+# deploy/example.server.tfvars. Each name's state is kept apart, beside its
+# config, and lists what was deployed where.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +28,10 @@ usage() {
     cat >&2 <<USAGE
 Usage: ./sms <tofu-command> [args...]
 
+Options:
+  --config=NAME   use deploy/NAME.tfvars and keep its state in NAME.tfstate
+                  (default: server). Also accepted as: --config NAME
+
 Examples:
   ./sms init
   ./sms plan
@@ -35,13 +39,30 @@ Examples:
   ./sms output
   ./sms output -raw url
   ./sms destroy
+  ./sms apply --config=gorilla
 
-The machine to deploy to is set in a config file (see SMS_CONFIG at the top of
-this script; default deploy/server.tfvars, copied from
-deploy/example.server.tfvars).
+The machine to deploy to is set in a config file, deploy/NAME.tfvars (default
+deploy/server.tfvars), copied from deploy/example.server.tfvars.
 USAGE
     exit 2
 }
+
+# Take out our own --config option, wherever it is; the rest goes to tofu.
+CONFIG_NAME="server"
+REST=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --config=*) CONFIG_NAME="${1#--config=}" ;;
+    --config)
+        [[ $# -ge 2 ]] || { echo "error: --config needs a name, e.g. --config=gorilla" >&2; exit 2; }
+        CONFIG_NAME="$2"
+        shift
+        ;;
+    *) REST+=("$1") ;;
+    esac
+    shift
+done
+set -- ${REST[@]+"${REST[@]}"}
 
 [[ $# -lt 1 ]] && usage
 
@@ -53,12 +74,12 @@ command -v tofu >/dev/null 2>&1 || {
 }
 
 # Absolute, because -chdir changes how relative paths resolve.
-CONFIG_PATH="${SMS_CONFIG:-$DEPLOY_DIR/server.tfvars}"
-CONFIG_DIR="$(cd "$(dirname "$CONFIG_PATH")" 2>/dev/null && pwd)" || {
-    echo "error: no such directory for the config file: $CONFIG_PATH" >&2
-    exit 1
-}
-CONFIG_PATH="$CONFIG_DIR/$(basename "$CONFIG_PATH")"
+CONFIG_NAME="${CONFIG_NAME%.tfvars}"
+if [[ ! "$CONFIG_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "error: --config takes a plain name like 'gorilla' (for deploy/gorilla.tfvars), not '$CONFIG_NAME'" >&2
+    exit 2
+fi
+CONFIG_PATH="$DEPLOY_DIR/$CONFIG_NAME.tfvars"
 
 ARGS=()
 
@@ -70,9 +91,8 @@ plan | apply | destroy | refresh | import | console)
 error: cannot read the config file: $CONFIG_PATH
 
 Say which machine to deploy to, for example:
-  cp deploy/example.server.tfvars deploy/server.tfvars
-  \$EDITOR deploy/server.tfvars
-or point SMS_CONFIG at a file you keep elsewhere.
+  cp deploy/example.server.tfvars deploy/$CONFIG_NAME.tfvars
+  \$EDITOR deploy/$CONFIG_NAME.tfvars
 MSG
         exit 1
     fi
@@ -80,17 +100,11 @@ MSG
     ;;
 esac
 
-# State is kept per config file, so that deploying a second machine (another
-# config) never overwrites the first one's, even without SMS_STATE_DIR.
-STATE_DIR_ABS="$DEPLOY_DIR"
-if [[ -n "${SMS_STATE_DIR:-}" ]]; then
-    mkdir -p "$SMS_STATE_DIR"
-    STATE_DIR_ABS="$(cd "$SMS_STATE_DIR" && pwd)"
-fi
-STATE_NAME="$(basename "$CONFIG_PATH" .tfvars)"
+# State is kept per config name, beside its config, so that deploying a second
+# machine (another config) never overwrites the first one's.
 case "$COMMAND" in
 plan | apply | destroy | refresh | import | output | show | state | taint | untaint)
-    ARGS+=("-state=$STATE_DIR_ABS/$STATE_NAME.tfstate")
+    ARGS+=("-state=$DEPLOY_DIR/$CONFIG_NAME.tfstate")
     ;;
 esac
 
