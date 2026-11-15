@@ -47,6 +47,32 @@ impl Drop for Servers {
     }
 }
 
+/// A port that is free now: bind to 0, note it, let go.
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn spawn_web(dir: &Path, port: u16) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_smweb"))
+        .arg("--socket")
+        .arg(dir.join("m.sock"))
+        .args([
+            "--http",
+            &format!("127.0.0.1:{port}"),
+            "--title",
+            "test box",
+        ])
+        .arg("--unix")
+        .arg(dir.join("web.sock"))
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap()
+}
+
 fn start() -> Servers {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
@@ -64,27 +90,9 @@ fn start() -> Servers {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    // A free port: bind to 0, note it, let go.
-    let port = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let web = Command::new(env!("CARGO_BIN_EXE_smweb"))
-        .arg("--socket")
-        .arg(dir.join("m.sock"))
-        .args([
-            "--http",
-            &format!("127.0.0.1:{port}"),
-            "--title",
-            "test box",
-        ])
-        .arg("--unix")
-        .arg(dir.join("web.sock"))
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let servers = Servers {
+    let port = free_port();
+    let web = spawn_web(&dir, port);
+    let mut servers = Servers {
         daemon,
         web,
         dir,
@@ -94,7 +102,17 @@ fn start() -> Servers {
     // daemon to have sampled.
     let start = Instant::now();
     loop {
-        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+        // The port was only free a moment ago: if something else took it in
+        // between, smweb has exited, so start it again on another.
+        if servers.web.try_wait().unwrap().is_some() {
+            servers.port = free_port();
+            servers.web = spawn_web(&servers.dir, servers.port);
+        }
+        assert!(
+            servers.daemon.try_wait().unwrap().is_none(),
+            "the daemon exited"
+        );
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", servers.port)) {
             stream.write_all(b"GET /fragment HTTP/1.1\r\n\r\n").ok();
             let mut reply = String::new();
             stream.read_to_string(&mut reply).ok();
