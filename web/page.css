@@ -42,11 +42,17 @@ label {
   font-size: 0.85rem;
   color: var(--pico-muted-color);
 }
-/* A label above its picker. (Not in metrics.css, which goes into other pages
-   too, where the page decides: see the note at the top of that file.) */
+/* A label beside its picker, vertically centred with it. (Not in
+   metrics.css, which goes into other pages too, where the page decides: see
+   the note at the top of that file.) */
 .metric-controls .field-row {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+.metric-controls label {
+  font-size: 1rem;
 }
 select {
   font: inherit;

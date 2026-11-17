@@ -148,6 +148,18 @@ fn serves_the_page_the_data_and_the_assets() {
         value["timestamps"].as_array().unwrap().len()
     );
 
+    let series = servers.get_tcp("GET /series?metric=cpu_percent&metric=load1 HTTP/1.1\r\n\r\n");
+    assert!(series.starts_with("HTTP/1.1 200 OK\r\n"), "{series}");
+    let value: Value = serde_json::from_str(body(&series)).unwrap();
+    assert_eq!(value["metrics"]["load1"]["metric"]["name"], "load1");
+    assert_eq!(
+        value["metrics"]["cpu_percent"]["avg"]
+            .as_array()
+            .unwrap()
+            .len(),
+        value["timestamps"].as_array().unwrap().len()
+    );
+
     let js = servers.get_tcp("GET /assets/uPlot.iife.min.js HTTP/1.1\r\n\r\n");
     assert!(js.contains("Content-Type: text/javascript"));
 

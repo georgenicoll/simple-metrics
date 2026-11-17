@@ -9,7 +9,8 @@
 //! |---|---|
 //! | `/` | The chart as a complete page (with the `--title` as a heading) |
 //! | `/fragment` | Just the chart's markup, for another web app to embed |
-//! | `/data?metric=NAME&range=1h` | The chart's data as JSON |
+//! | `/data?metric=NAME&range=1h` | One metric's data as JSON (`from=MS&to=MS` instead of `range` for a window) |
+//! | `/series?metric=A&metric=B&range=1h` | The same for several metrics at once, as the page uses |
 //! | `/assets/NAME` | The script, styles, chart library and icon (a chimp holding a clapperboard) |
 //! | `/healthz` | `ok` |
 //!
@@ -68,6 +69,12 @@ pub const RANGES: [(&str, u64); 4] = [
 /// A chart has nowhere near this many pixels, so more points would only cost
 /// time and bandwidth: the collector averages down to (at most) this many.
 const POINTS: u64 = 600;
+
+/// The most metrics one `/data` request may ask for.
+const MAX_METRICS: usize = 20;
+
+/// The widest window a chart may ask for explicitly.
+const MAX_WINDOW_MS: u64 = 366 * 24 * 3600 * 1000;
 
 const UNUSABLE: &str = "The metrics collector isn't giving usable data.";
 
@@ -276,11 +283,7 @@ fn render_fragment(site: &Site, metrics: &Result<Value, CollectorError>) -> Stri
         }
         Ok(reply) => {
             let all = listing(reply);
-            html.push_str(
-                "<div class=\"metric-controls\">\n  <div class=\"field-row\">\n    \
-                 <label for=\"metric-select\">Metric</label>\n    \
-                 <select id=\"metric-select\" class=\"fit-content\">\n",
-            );
+            let mut options = String::new();
             let (network, system): (Vec<_>, Vec<_>) = all
                 .into_iter()
                 .partition(|(name, _, _)| name.starts_with("net_"));
@@ -288,7 +291,7 @@ fn render_fragment(site: &Site, metrics: &Result<Value, CollectorError>) -> Stri
                 if group.is_empty() {
                     continue;
                 }
-                writeln!(html, "      <optgroup label=\"{heading}\">").ok();
+                writeln!(options, "        <optgroup label=\"{heading}\">").ok();
                 for (name, label, unit) in group {
                     let unit = if unit.is_empty() {
                         String::new()
@@ -296,35 +299,46 @@ fn render_fragment(site: &Site, metrics: &Result<Value, CollectorError>) -> Stri
                         format!(" ({})", escape(unit))
                     };
                     writeln!(
-                        html,
-                        "        <option value=\"{}\">{}{unit}</option>",
+                        options,
+                        "          <option value=\"{}\">{}{unit}</option>",
                         escape(name),
                         escape(label)
                     )
                     .ok();
                 }
-                html.push_str("      </optgroup>\n");
+                options.push_str("        </optgroup>\n");
             }
-            html.push_str(
-                "    </select>\n  </div>\n  <div class=\"field-row\">\n    \
-                 <label for=\"range-select\">Last</label>\n    \
-                 <select id=\"range-select\" class=\"fit-content\">\n",
-            );
+            let mut ranges = String::new();
             for (name, _) in RANGES {
                 let selected = if name == "1h" { " selected" } else { "" };
                 writeln!(
-                    html,
+                    ranges,
                     "      <option value=\"{name}\"{selected}>{name}</option>"
                 )
                 .ok();
             }
+            // One shared "Last" picker for every graph; each graph (cloned
+            // from the template by metrics.js) has its own metric picker.
             write!(
                 html,
-                "    </select>\n  </div>\n</div>\n\n\
-                 <div id=\"chart\" class=\"chart\" role=\"img\" \
-                 aria-label=\"Chart of the selected metric over time\" \
-                 data-url=\"{base}/data\"></div>\n\
-                 <p id=\"chart-status\" class=\"chart-status\" aria-live=\"polite\">Loading...</p>\n\
+                "<div class=\"metric-controls\" id=\"metrics-root\" data-url=\"{base}/series\">\n  \
+                 <div class=\"field-row\">\n    \
+                 <label for=\"range-select\">Last</label>\n    \
+                 <select id=\"range-select\" class=\"fit-content\">\n{ranges}    </select>\n  </div>\n  \
+                 <div class=\"field-row\">\n    \
+                 <button type=\"button\" id=\"range-reset\" class=\"graph-button\" hidden>Reset</button>\n  </div>\n  \
+                 <span id=\"selection-note\" class=\"chart-status\" aria-live=\"polite\"></span>\n  \
+                 <span id=\"updated\" class=\"chart-status\"></span>\n</div>\n\n\
+                 <div id=\"graphs\"></div>\n\
+                 <button type=\"button\" id=\"add-graph\" class=\"graph-button\" \
+                 title=\"Add another graph\" aria-label=\"Add another graph\"><svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 8v8M8 12h8\"/></svg><span>Add</span></button>\n\n\
+                 <template id=\"graph-template\">\n  <section class=\"graph\">\n    \
+                 <div class=\"graph-head\">\n      \
+                 <select class=\"metric-select fit-content\" aria-label=\"Metric\">\n{options}      </select>\n      \
+                 <button type=\"button\" class=\"graph-button graph-delete\" \
+                 title=\"Remove this graph\" aria-label=\"Remove this graph\"><svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6\"/></svg></button>\n    </div>\n    \
+                 <div class=\"chart\" role=\"img\" aria-label=\"Chart of the selected metric over time\"></div>\n    \
+                 <p class=\"chart-status\" aria-live=\"polite\"></p>\n  </section>\n</template>\n\
                  <script src=\"{base}/assets/uPlot.iife.min.js?v={VERSION}\"></script>\n\
                  <script src=\"{base}/assets/metrics.js?v={VERSION}\" defer></script>\n"
             )
@@ -403,6 +417,21 @@ fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
+/// Every value of query parameter `name`, in order, without repeats.
+fn query_params<'a>(query: &'a str, name: &str) -> Vec<&'a str> {
+    let mut found: Vec<&str> = Vec::new();
+    for value in query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .filter_map(|(key, value)| (key == name).then_some(value))
+    {
+        if !found.contains(&value) {
+            found.push(value);
+        }
+    }
+    found
+}
+
 /// Whether `name` could be a metric's: the characters interface names come
 /// with. Checked before a name goes anywhere near the collector.
 fn valid_metric_name(name: &str) -> bool {
@@ -412,15 +441,70 @@ fn valid_metric_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+/// `/data`: the original, single-metric form of [`series`], kept so that
+/// anything written against it still works. Same query (with exactly one
+/// `metric`), and the reply has that metric's `metric`, `avg`, `min` and
+/// `max` at the top level beside `range`, `now`, `step_ms` and `timestamps`.
 fn data(collector: &dyn Collector, query: &str, now_ms: u64) -> Response {
-    let metric = query_param(query, "metric").unwrap_or("");
-    if !valid_metric_name(metric) {
+    if query_params(query, "metric").len() > 1 {
+        return Response::json_error(400, "/data takes one metric; use /series for several");
+    }
+    let response = series(collector, query, now_ms);
+    if response.status != 200 {
+        return response;
+    }
+    let Ok(Value::Object(mut reply)) = serde_json::from_slice::<Value>(&response.body) else {
+        return response;
+    };
+    let Some(Value::Object(metrics)) = reply.remove("metrics") else {
+        return response;
+    };
+    if let Some(Value::Object(one)) = metrics.into_iter().next().map(|(_, v)| v) {
+        reply.extend(one);
+    }
+    Response::json(200, &Value::Object(reply))
+}
+
+/// `/series`: any number of metrics (a repeated `metric=`) over one period,
+/// read from the collector together. The reply has one shared `timestamps`
+/// and, under `metrics.<name>`, each metric's `metric` (name, label, unit),
+/// `avg`, `min` and `max`.
+fn series(collector: &dyn Collector, query: &str, now_ms: u64) -> Response {
+    // One request serves every graph on the page: `metric=` is repeated.
+    let wanted = query_params(query, "metric");
+    if wanted.is_empty()
+        || wanted.len() > MAX_METRICS
+        || !wanted.iter().all(|m| valid_metric_name(m))
+    {
         return Response::json_error(400, "no such metric");
     }
-    let range = query_param(query, "range").unwrap_or("1h");
-    let Some((_, seconds)) = RANGES.iter().find(|(name, _)| *name == range) else {
-        let names: Vec<&str> = RANGES.iter().map(|(name, _)| *name).collect();
-        return Response::json_error(400, &format!("range must be one of {}", names.join(", ")));
+    // Either a named range ending now, or an explicit window (`from` and
+    // `to`, in milliseconds since the epoch) such as one selected on a chart.
+    let (range, from_ms, to_ms) = match (query_param(query, "from"), query_param(query, "to")) {
+        (None, None) => {
+            let range = query_param(query, "range").unwrap_or("1h");
+            let Some((_, seconds)) = RANGES.iter().find(|(name, _)| *name == range) else {
+                let names: Vec<&str> = RANGES.iter().map(|(name, _)| *name).collect();
+                return Response::json_error(
+                    400,
+                    &format!("range must be one of {}", names.join(", ")),
+                );
+            };
+            (range, now_ms.saturating_sub(seconds * 1000), None)
+        }
+        (Some(from), Some(to)) => {
+            let (Ok(from), Ok(to)) = (from.parse::<u64>(), to.parse::<u64>()) else {
+                return Response::json_error(
+                    400,
+                    "from and to must be milliseconds since the epoch",
+                );
+            };
+            if to <= from || to - from > MAX_WINDOW_MS {
+                return Response::json_error(400, "from must be before to, by at most a year");
+            }
+            ("custom", from, Some(to))
+        }
+        _ => return Response::json_error(400, "give both from and to, or neither"),
     };
     let unavailable = |error: CollectorError| {
         Response::json_error(503, &format!("{}.", capitalise(&error.to_string())))
@@ -429,46 +513,62 @@ fn data(collector: &dyn Collector, query: &str, now_ms: u64) -> Response {
         Ok(reply) => reply,
         Err(error) => return unavailable(error),
     };
-    let Some(known) = all
-        .get("metrics")
-        .and_then(Value::as_array)
-        .and_then(|list| list.iter().find(|m| m.get("name") == Some(&json!(metric))))
-    else {
-        return Response::json_error(404, "no such metric");
-    };
-    let reply = match collector.request(&json!({
+    let mut known = Vec::new();
+    for metric in &wanted {
+        let Some(found) = all
+            .get("metrics")
+            .and_then(Value::as_array)
+            .and_then(|list| list.iter().find(|m| m.get("name") == Some(&json!(metric))))
+        else {
+            return Response::json_error(404, "no such metric");
+        };
+        known.push(found);
+    }
+    let mut read = json!({
         "op": "read",
-        "metrics": [metric],
-        "from": now_ms.saturating_sub(seconds * 1000),
+        "metrics": wanted,
+        "from": from_ms,
         "max_points": POINTS,
         "extremes": true,
-    })) {
+    });
+    if let Some(to) = to_ms {
+        read["to"] = json!(to);
+    }
+    let reply = match collector.request(&read) {
         Ok(reply) => reply,
         Err(error) => return unavailable(error),
     };
     // A reply that isn't shaped as expected, e.g. from an older collector.
-    let column = |key: &str| reply.get(key)?.get(metric).filter(|v| v.is_array());
-    let (Some(avg), Some(min), Some(max), Some(timestamps), Some(step_ms)) = (
-        column("series"),
-        column("min"),
-        column("max"),
+    let (Some(timestamps), Some(step_ms)) = (
         reply.get("timestamps").filter(|v| v.is_array()),
         reply.get("step_ms").filter(|v| v.is_u64()),
     ) else {
         crate::log(format_args!("unexpected reply from the collector: {reply}"));
         return Response::json_error(503, UNUSABLE);
     };
+    let mut metrics = serde_json::Map::new();
+    for (metric, known) in wanted.iter().zip(known) {
+        let column = |key: &str| reply.get(key)?.get(*metric).filter(|v| v.is_array());
+        let (Some(avg), Some(min), Some(max)) = (column("series"), column("min"), column("max"))
+        else {
+            crate::log(format_args!("unexpected reply from the collector: {reply}"));
+            return Response::json_error(503, UNUSABLE);
+        };
+        metrics.insert(
+            (*metric).to_owned(),
+            json!({ "metric": known, "avg": avg, "min": min, "max": max }),
+        );
+    }
     Response::json(
         200,
         &json!({
-            "metric": known,
             "range": range,
             "now": now_ms,
+            "from": from_ms,
+            "to": to_ms,
             "step_ms": step_ms,
             "timestamps": timestamps,
-            "avg": avg,
-            "min": min,
-            "max": max,
+            "metrics": metrics,
         }),
     )
 }
@@ -510,6 +610,7 @@ pub fn route(
             &collector.request(&json!({ "op": "metrics" })),
         )),
         "/data" => data(collector, query, now_ms),
+        "/series" => series(collector, query, now_ms),
         // Browsers ask for this by default, whatever the page says.
         "/favicon.ico" => asset("favicon.svg"),
         "/healthz" => Response::text(200, "ok"),
@@ -914,7 +1015,7 @@ mod tests {
         assert!(html.contains("<option value=\"cpu_percent\">CPU use (%)</option>"));
         assert!(html.contains("<option value=\"load1\">Load &lt;1 min&gt;</option>"));
         assert!(html.contains("<option value=\"1h\" selected>1h</option>"));
-        assert!(html.contains("data-url=\"/data\""));
+        assert!(html.contains("data-url=\"/series\""));
         assert!(html.contains("href=\"/assets/page.css?v="));
         assert!(
             html.contains(
@@ -941,7 +1042,8 @@ mod tests {
         let html = body(&get(&fake, "/fragment"));
         assert!(!html.contains("<html"));
         assert!(!html.contains("page.css"));
-        assert!(html.contains("id=\"chart\""));
+        assert!(html.contains("id=\"graphs\""));
+        assert!(html.contains("id=\"graph-template\""));
     }
 
     #[test]
@@ -952,7 +1054,7 @@ mod tests {
             title: String::new(),
         };
         let html = body(&route(&site, &fake, "GET", "/fragment", 0));
-        assert!(html.contains("data-url=\"/metrics/data\""));
+        assert!(html.contains("data-url=\"/metrics/series\""));
         assert!(html.contains("src=\"/metrics/assets/metrics.js?v="));
     }
 
@@ -968,26 +1070,82 @@ mod tests {
     }
 
     #[test]
+    fn data_accepts_an_explicit_window() {
+        let fake = Fake::new(vec![Ok(listing_reply()), Ok(read_reply())]);
+        let response = get(&fake, "/data?metric=cpu_percent&from=1000&to=5000");
+        assert_eq!(response.status, 200);
+        let sent = fake.asked.lock().unwrap();
+        assert_eq!(sent[1]["from"], 1000);
+        assert_eq!(sent[1]["to"], 5000);
+        drop(sent);
+        for bad in ["from=1000", "from=5000&to=1000", "from=a&to=b"] {
+            let fake = Fake::new(vec![]);
+            let response = get(&fake, &format!("/data?metric=cpu_percent&{bad}"));
+            assert_eq!(response.status, 400, "{bad}");
+        }
+    }
+
+    #[test]
     fn data_asks_for_the_range_downsampled_with_extremes() {
         let fake = Fake::new(vec![Ok(listing_reply()), Ok(read_reply())]);
-        let response = get(&fake, "/data?metric=cpu_percent&range=6h");
+        let response = get(&fake, "/series?metric=cpu_percent&range=6h");
         assert_eq!(response.status, 200);
         assert_eq!(response.content_type, "application/json");
         assert_eq!(response.cache_control, "no-store");
         let value: Value = serde_json::from_slice(&response.body).unwrap();
-        assert_eq!(value["metric"]["label"], "CPU use");
+        let cpu = &value["metrics"]["cpu_percent"];
+        assert_eq!(cpu["metric"]["label"], "CPU use");
         assert_eq!(value["range"], "6h");
         assert_eq!(value["now"], NOW);
         assert_eq!(value["step_ms"], 60000);
-        assert_eq!(value["avg"], json!([1.0, null]));
-        assert_eq!(value["min"], json!([0.5, null]));
-        assert_eq!(value["max"], json!([2.0, null]));
+        assert_eq!(cpu["avg"], json!([1.0, null]));
+        assert_eq!(cpu["min"], json!([0.5, null]));
+        assert_eq!(cpu["max"], json!([2.0, null]));
         let asked = fake.asked.lock().unwrap();
         assert_eq!(asked[1]["op"], "read");
         assert_eq!(asked[1]["metrics"], json!(["cpu_percent"]));
         assert_eq!(asked[1]["from"], NOW - 6 * 3600 * 1000);
         assert_eq!(asked[1]["max_points"], 600);
         assert_eq!(asked[1]["extremes"], true);
+    }
+
+    #[test]
+    fn data_serves_several_metrics_in_one_collector_read() {
+        let mut read = read_reply();
+        read["series"]["load1"] = json!([0.1, 0.2]);
+        read["min"]["load1"] = json!([0.1, 0.2]);
+        read["max"]["load1"] = json!([0.1, 0.2]);
+        let fake = Fake::new(vec![Ok(listing_reply()), Ok(read)]);
+        // load1 is asked for twice (two graphs): it is read once.
+        let response = get(
+            &fake,
+            "/series?metric=cpu_percent&metric=load1&metric=load1",
+        );
+        assert_eq!(response.status, 200);
+        let value: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(value["metrics"]["load1"]["avg"], json!([0.1, 0.2]));
+        assert_eq!(value["metrics"]["load1"]["metric"]["label"], "Load <1 min>");
+        let asked = fake.asked.lock().unwrap();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[1]["metrics"], json!(["cpu_percent", "load1"]));
+    }
+
+    #[test]
+    fn data_keeps_the_original_single_metric_shape() {
+        let fake = Fake::new(vec![Ok(listing_reply()), Ok(read_reply())]);
+        let response = get(&fake, "/data?metric=cpu_percent&range=6h");
+        assert_eq!(response.status, 200);
+        let value: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(value["metric"]["name"], "cpu_percent");
+        assert_eq!(value["range"], "6h");
+        assert_eq!(value["step_ms"], 60000);
+        assert_eq!(value["timestamps"], json!([1000, 2000]));
+        assert_eq!(value["avg"], json!([1.0, null]));
+        assert_eq!(value["min"], json!([0.5, null]));
+        assert_eq!(value["max"], json!([2.0, null]));
+        assert!(value.get("metrics").is_none());
+        let fake = Fake::new(vec![]);
+        assert_eq!(get(&fake, "/data?metric=a&metric=b").status, 400);
     }
 
     #[test]
@@ -1066,7 +1224,7 @@ mod tests {
     fn the_stylesheet_that_travels_with_the_chart_leaves_the_pickers_layout_to_the_page() {
         // metrics.css is linked into whatever page embeds the chart, and that
         // page already styles `.field-row` its own way (wireguard-ap's is a
-        // row). The stacked label-over-picker layout is smweb's own page's
+        // row). The label-beside-picker layout is smweb's own page's
         // choice, so it lives in page.css, which only that page loads.
         let fake = Fake::new(vec![]);
         let shared = without_comments(&body(&get(&fake, "/assets/metrics.css")));
@@ -1076,7 +1234,7 @@ mod tests {
             "metrics.css lays out .field-row: that belongs in page.css"
         );
         assert!(own_page.contains(".metric-controls .field-row"));
-        assert!(own_page.contains("flex-direction: column"));
+        assert!(own_page.contains("align-items: center"));
     }
 
     #[test]

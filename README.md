@@ -64,7 +64,11 @@ and group only.
 
 `smweb` is a small read-only web server, built alongside the daemon and shipped
 in the same release archive and image. It serves the chart of any metric over
-the last hour, 6 hours, day or week, refreshing every 5 seconds: the line is
+the last hour, 6 hours, day or week, refreshing every 5 seconds. Add as many
+graphs as you like with **Add** (and remove them again; one always stays): the
+layout is remembered in a cookie, and every graph shares the time range and
+the hover cursor. Drag across any graph to select a period: all graphs then
+show just that, "Last" is greyed out, and **Reset** goes back to it. The line is
 the average and the shaded band the smallest-to-largest value in each time
 bucket, so a short spike still shows on a week-long chart. The page, its
 script and styles and the chart library (uPlot) are built into the binary, so
@@ -87,7 +91,8 @@ smweb --http 127.0.0.1:8080     # then open http://127.0.0.1:8080/
 |---|---|
 | `/` | The chart as a complete page. |
 | `/fragment` | Just the chart's markup (pickers, chart, script and style links), for another web app to embed in its own page. |
-| `/data?metric=NAME&range=1h` | The chart's data as JSON: `timestamps`, `avg`, `min`, `max`. |
+| `/series?metric=A&metric=B&range=1h` | The data for one or more metrics (one request for all the graphs on the page) as JSON: a shared `timestamps`, and under `metrics.NAME` each one's `metric`, `avg`, `min`, `max`. Use `from=MS&to=MS` (milliseconds since the epoch, at most a year apart) instead of `range` for a particular period. |
+| `/data?metric=NAME&range=1h` | The same for a single metric, with `metric`, `avg`, `min` and `max` at the top level (the original form, kept for anything written against it). |
 | `/assets/NAME` | The script, styles, chart library and the page's icon (a cartoon chimp holding a clapperboard, `web/favicon.svg`). `/favicon.ico` serves the same icon, since browsers ask for it by default. |
 | `/healthz` | `ok`. |
 
