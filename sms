@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
 # Thin wrapper around tofu that deploys simple-metrics (see deploy/) to one
-# machine and injects the config file that says which, so that day-to-day use
-# is:
+# machine, chosen by naming its config first, so that day-to-day use is:
 #
-#   ./sms init
-#   ./sms plan
-#   ./sms apply
-#   ./sms output
-#   ./sms destroy
+#   ./sms gorilla init
+#   ./sms gorilla plan
+#   ./sms gorilla apply
+#   ./sms gorilla output
+#   ./sms gorilla destroy
 #
-# To deploy to a different machine, name its config with --config (anywhere on
-# the command line):
+# Switching machine means changing one word:  ./sms chimp apply
 #
-#   ./sms plan  --config=gorilla      # deploy/gorilla.tfvars, gorilla.tfstate
-#   ./sms apply --config=gorilla
-#
-# Without it the name is "server": deploy/server.tfvars and server.tfstate.
-# The config (host, ssh user, image...) is private and not checked in: copy
-# deploy/example.server.tfvars. Each name's state is kept apart, beside its
-# config, and lists what was deployed where.
+# The first argument names the config: deploy/NAME.tfvars, copied from
+# deploy/example.server.tfvars (private, not checked in). Each name's state is
+# kept apart, beside its config, as deploy/NAME.tfstate, and lists what was
+# deployed where. Everything after the command goes to tofu.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,46 +21,27 @@ DEPLOY_DIR="$REPO_DIR/deploy"
 
 usage() {
     cat >&2 <<USAGE
-Usage: ./sms <tofu-command> [args...]
+Usage: ./sms <config> <tofu-command> [args...]
 
-Options:
-  --config=NAME   use deploy/NAME.tfvars and keep its state in NAME.tfstate
-                  (default: server). Also accepted as: --config NAME
+Configs: $(cd "$DEPLOY_DIR" && ls ./*.tfvars 2>/dev/null | sed 's#^\./##; s#\.tfvars$##; /^example\.server$/d' | tr '\n' ' ')
 
 Examples:
-  ./sms init
-  ./sms plan
-  ./sms apply
-  ./sms output
-  ./sms output -raw url
-  ./sms destroy
-  ./sms apply --config=gorilla
+  ./sms gorilla init
+  ./sms gorilla plan
+  ./sms gorilla apply
+  ./sms gorilla output
+  ./sms gorilla output -raw url
+  ./sms gorilla destroy
 
-The machine to deploy to is set in a config file, deploy/NAME.tfvars (default
-deploy/server.tfvars), copied from deploy/example.server.tfvars.
+The machine to deploy to is set in a config file, deploy/<config>.tfvars,
+copied from deploy/example.server.tfvars.
 USAGE
     exit 2
 }
 
-# Take out our own --config option, wherever it is; the rest goes to tofu.
-CONFIG_NAME="server"
-REST=()
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --config=*) CONFIG_NAME="${1#--config=}" ;;
-    --config)
-        [[ $# -ge 2 ]] || { echo "error: --config needs a name, e.g. --config=gorilla" >&2; exit 2; }
-        CONFIG_NAME="$2"
-        shift
-        ;;
-    *) REST+=("$1") ;;
-    esac
-    shift
-done
-set -- ${REST[@]+"${REST[@]}"}
+[[ $# -lt 2 ]] && usage
 
-[[ $# -lt 1 ]] && usage
-
+CONFIG_NAME="${1%.tfvars}"; shift
 COMMAND="$1"; shift
 
 command -v tofu >/dev/null 2>&1 || {
@@ -73,11 +49,9 @@ command -v tofu >/dev/null 2>&1 || {
     exit 1
 }
 
-# Absolute, because -chdir changes how relative paths resolve.
-CONFIG_NAME="${CONFIG_NAME%.tfvars}"
 if [[ ! "$CONFIG_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-    echo "error: --config takes a plain name like 'gorilla' (for deploy/gorilla.tfvars), not '$CONFIG_NAME'" >&2
-    exit 2
+    echo "error: the first argument is a config name like 'gorilla' (for deploy/gorilla.tfvars), not '$CONFIG_NAME'" >&2
+    usage
 fi
 CONFIG_PATH="$DEPLOY_DIR/$CONFIG_NAME.tfvars"
 

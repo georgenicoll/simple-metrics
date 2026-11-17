@@ -310,8 +310,9 @@ that on a remote machine over SSH, using the Docker provider:
 - **Nothing is installed on the machine and no `sudo` is used**; it only needs
   Docker, and an SSH user who can run it (in the `docker` group).
 
-`./sms` wraps `tofu` for it (`./sms init`, `./sms plan`, `./sms apply`,
-`./sms destroy`), running it in `deploy/` with your `server.tfvars`. See
+`./sms` wraps `tofu` for it (`./sms server init`, `./sms server plan`,
+`./sms server apply`, `./sms server destroy`, where `server` names your
+`deploy/server.tfvars`), running it in `deploy/` with that config. See
 [deploy/README.md](deploy/README.md) for the steps, what it creates, how to
 upgrade and how to remove it.
 
@@ -364,7 +365,7 @@ cargo test
 | `src/main.rs` | A thin wrapper around the library |
 | `Dockerfile` | The image: the release's static binaries in an empty image (built by the release workflow, not by hand) |
 | `deploy/` | OpenTofu configuration that runs the image on a remote machine over SSH (see "Deploying with Docker") |
-| `sms` | A thin wrapper around `tofu` for `deploy/`: `./sms plan`, `./sms apply`... with your config file and per-machine state |
+| `sms` | A thin wrapper around `tofu` for `deploy/`: `./sms NAME plan`, `./sms NAME apply`... with that machine's config file and per-machine state |
 | `run_local.sh` | Builds and runs the daemon in the foreground for development (used with `smq --local`) |
 | `tests/daemon.rs` | End to end: runs the real binary on a real socket, including kill-and-restart with a state directory |
 | `tests/smq.rs` | End to end: runs the real `smq` against the real daemon |

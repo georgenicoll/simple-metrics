@@ -1,9 +1,9 @@
 # Copy this to server.tfvars (which is not checked in) and fill it in:
 #
 #   cp deploy/example.server.tfvars deploy/server.tfvars
-#   ./sms init
-#   ./sms plan
-#   ./sms apply
+#   ./sms server init
+#   ./sms server plan
+#   ./sms server apply
 
 # The machine to deploy to, reachable over SSH from here.
 host = "your.server.name"
