@@ -57,38 +57,30 @@ is git-ignored too) and name it with `--config=other`; see the next section.
 
 `./sms` (in the repository root, in the style of wireguard-router's `wgr` and
 wireguard-ap's `wga`) is a thin wrapper around `tofu` that runs it in `deploy/`
-with your config file, so day to day you type:
+with a machine's config file. The first argument names the config (the machine),
+the second is the tofu command, so day to day you type:
 
 ```bash
-./sms init                 # once
-./sms plan
-./sms apply
-./sms output               # the page's URL, and how to read the logs
-./sms destroy
+./sms gorilla init                 # once
+./sms gorilla plan
+./sms gorilla apply
+./sms gorilla output               # the page's URL, and how to read the logs
+./sms gorilla destroy
 ```
 
 Any other tofu command and its arguments pass straight through
-(`./sms output -raw url`, `./sms apply -replace=docker_container.web`).
+(`./sms gorilla output -raw url`, `./sms gorilla apply -replace=docker_container.web`).
 
-To deploy to a different machine, name its config with `--config` (it can go
-anywhere on the command line). Without it the name is `server`:
-
-```bash
-./sms plan                     # deploy/server.tfvars, state in server.tfstate
-./sms plan  --config=gorilla   # deploy/gorilla.tfvars, state in gorilla.tfstate
-./sms apply --config=gorilla
-```
-
-The name is a plain one (no path); the config and its state share it.
-`--config gorilla` and `--config=gorilla.tfvars` also work.
+Switching machine means changing one word: `./sms chimp apply`. The name is a
+plain one (no path) for `deploy/NAME.tfvars`; `gorilla.tfvars` is accepted too.
 
 **State is kept per config name**, in `deploy/` beside the config:
-`server.tfvars` uses `server.tfstate`, `gorilla.tfvars` uses `gorilla.tfstate`.
+`gorilla.tfvars` uses `gorilla.tfstate`, `chimp.tfvars` uses `chimp.tfstate`.
 So two machines never share or overwrite each other's state. (State files are
 git-ignored; they list what was deployed where, so back them up if you care.)
 Because of that, don't mix `./sms` with plain `tofu` run in `deploy/`: plain
 `tofu` uses `terraform.tfstate` and wouldn't see what `./sms` deployed. If you
-do run `tofu` directly, add `-var-file=server.tfvars -state=server.tfstate`.
+do run `tofu` directly, add `-var-file=NAME.tfvars -state=NAME.tfstate`.
 
 `./sms` prints the `tofu` command it runs (as `wgr` and `wga` do), and checks
 that the config file exists before anything that needs it, with a message
@@ -104,7 +96,7 @@ so on for the bridges). The list it settled on is in the collector's log
 (`docker logs simple-metrics-collector`).
 
 - An interface that appears **after** the collector started isn't charted
-  until it restarts (`./sms apply` doesn't restart it if nothing changed; use
+  until it restarts (`./sms server apply` doesn't restart it if nothing changed; use
   `ssh <user>@<host> docker restart simple-metrics-collector`).
 - If the set of interfaces differs after a restart, the saved history is
   matched to the new set by name: new interfaces start with a gap and removed
@@ -118,9 +110,9 @@ so on for the bridges). The list it settled on is in the collector's log
 ## Deploy
 
 ```bash
-./sms init                                 # once
-./sms plan
-./sms apply
+./sms server init                          # once ("server" is the config name)
+./sms server plan
+./sms server apply
 ```
 
 `apply` prints the page's URL and a command for reading the containers' logs.
@@ -128,13 +120,13 @@ so on for the bridges). The list it settled on is in the collector's log
 ## Upgrade
 
 Change `image` in `server.tfvars` to the new release's (with its digest) and
-`./sms apply`. The containers are replaced; the history
+`./sms server apply`. The containers are replaced; the history
 lives in a volume and carries on, with a short gap in the charts.
 
 ## Remove
 
 ```bash
-./sms destroy
+./sms server destroy
 ```
 
 That removes the containers, the volumes **(including the history)** and the
