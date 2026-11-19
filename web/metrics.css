@@ -22,6 +22,56 @@
   font-size: 0.8rem;
   text-align: left;
 }
+/* The legend has a fixed shape so pointing at the chart never changes its
+   height (the panels can be narrow, and a wrapping legend made the row jump):
+   the time on a line of its own, then average, min and max in three equal
+   columns. The values are always laid out, empty until the pointer is over
+   the chart, and are cut short rather than wrapped. */
+.chart .u-legend.u-inline {
+  display: block;
+  margin: 0;
+}
+/* The rows sit in a tbody inside the table, so the grid goes on that. */
+.chart .u-legend.u-inline tbody {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.chart .u-legend.u-inline .u-series {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+}
+.chart .u-legend.u-inline .u-series:first-child {
+  grid-column: 1 / -1;
+}
+.chart .u-legend.u-inline .u-series > * {
+  display: block;
+  padding: 2px 4px;
+}
+.chart .u-legend.u-inline .u-series th {
+  flex: none;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+.chart .u-legend.u-inline .u-series .u-value {
+  line-height: 1.3;
+}
+.chart .u-legend.u-inline .u-series th::after {
+  content: ":";
+  line-height: 1;
+}
+.chart .u-legend.u-inline .u-series .u-value {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chart .u-legend.u-inline .u-series .u-value:empty::before {
+  content: "\00a0";
+}
 .chart-status {
   font-size: 0.8rem;
   color: var(--pico-muted-color, #73818c);
@@ -30,10 +80,94 @@
 .chart-status.error {
   color: var(--pico-del-color, #c62828);
 }
-/* Several graphs, one under another. */
-.graph {
-  margin-bottom: var(--pico-spacing, 1rem);
+/* Panels: rows of 6 columns; each panel spans 2 to 6 of them (metrics.js sets
+   the span). A row holds at most 3 panels and is always full. */
+.panel-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
 }
+.graph {
+  position: relative;
+  min-width: 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--pico-muted-border-color, #e0e3e7);
+  border-radius: 0.4rem;
+}
+/* On a narrow screen the panels simply stack; moving and resizing are off. */
+@media (max-width: 700px) {
+  .panel-row { grid-template-columns: 1fr; }
+  .graph { grid-column: auto !important; }
+  .graph-grip, .col-resizer { display: none !important; }
+}
+.graph-head .metric-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.graph-grip {
+  cursor: grab;
+  touch-action: none;
+  color: var(--pico-muted-color, #73818c);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The edge a panel shares with the next one in its row. */
+.col-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -0.9rem;
+  width: 0.8rem;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 2;
+}
+.col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 25%;
+  bottom: 25%;
+  left: 50%;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: var(--pico-primary, #0172ad);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.col-resizer:hover::after, .panels-resizing .col-resizer::after {
+  opacity: 0.6;
+}
+.col-resizer[hidden] { display: none; }
+/* While dragging: the panel stays in the grid as a faint placeholder where it
+   would land, and a see-through copy follows the pointer. */
+.graph.dragging {
+  opacity: 0.35;
+  border-style: dashed;
+  border-color: var(--pico-primary, #0172ad);
+}
+.panel-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1000;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  padding: 0.8rem;
+  font-weight: 600;
+  color: var(--pico-primary, #0172ad);
+  background: color-mix(in srgb, var(--pico-primary, #0172ad) 18%, transparent);
+  border: 2px solid var(--pico-primary, #0172ad);
+  border-radius: 0.4rem;
+  opacity: 0.6;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.panels-dragging, .panels-dragging * { cursor: grabbing !important; user-select: none; }
+.panels-resizing, .panels-resizing * { cursor: col-resize !important; user-select: none; }
 .graph-head {
   display: flex;
   align-items: center;
@@ -114,5 +248,58 @@
   white-space: nowrap;
 }
 .graph .chart-status:empty {
+  display: none;
+}
+
+/* The time under the pointer is the same on every graph, so it is not in each
+   legend but in a bar below the panels (metrics.js). It sticks to the foot of
+   the window while the panels are in view; smweb's own page docks it there. */
+.chart .u-legend.u-inline .u-series:first-child {
+  display: none;
+}
+#time-dock {
+  position: sticky;
+  /* A page with its own bar fixed to the foot of the window sets this to that
+     bar's height, so the time bar sits just above it. */
+  bottom: var(--time-dock-bottom, 0);
+  z-index: 5;
+  margin-top: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  background: var(--pico-background-color, var(--page-bg, Canvas));
+  color: var(--pico-muted-color, #73818c);
+  border-top: 1px solid var(--pico-muted-border-color, #e0e3e7);
+}
+
+/* The average's legend swatch (click it to hide or show the line): shown, it
+   is a box with a dimmed primary border and a dimmer fill still; hidden, the box is empty and its border dimmer. (uPlot sets the
+   swatch's colours inline, hence !important.) */
+.chart .u-legend.u-inline .u-series:nth-child(2) .u-marker {
+  border-color: color-mix(in srgb, var(--pico-primary, #0172ad) 25%, transparent) !important;
+  background: color-mix(in srgb, var(--pico-primary, #0172ad) 11%, transparent) !important;
+}
+.chart .u-legend.u-inline .u-series.u-off:nth-child(2) .u-marker {
+  /* uPlot already fades everything in a hidden series' entry, so the border
+     keeps its colour and comes out dimmer that way. */
+  background: transparent !important;
+}
+/* A tick in the box while the average is shown. */
+.chart .u-legend.u-inline .u-series:nth-child(2) .u-marker {
+  position: relative;
+}
+.chart .u-legend.u-inline .u-series:nth-child(2) .u-marker::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 0.28em;
+  height: 0.55em;
+  border: solid color-mix(in srgb, var(--pico-primary, #0172ad) 65%, transparent);
+  border-width: 0 2px 2px 0;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+.chart .u-legend.u-inline .u-series.u-off:nth-child(2) .u-marker::after {
   display: none;
 }

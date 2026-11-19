@@ -331,9 +331,10 @@ fn render_fragment(site: &Site, metrics: &Result<Value, CollectorError>) -> Stri
                  <span id=\"updated\" class=\"chart-status\"></span>\n</div>\n\n\
                  <div id=\"graphs\"></div>\n\
                  <button type=\"button\" id=\"add-graph\" class=\"graph-button\" \
-                 title=\"Add another graph\" aria-label=\"Add another graph\"><svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 8v8M8 12h8\"/></svg><span>Add</span></button>\n\n\
+                 title=\"Add another panel\" aria-label=\"Add another panel\"><svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 8v8M8 12h8\"/></svg><span>Add</span></button>\n\n\
                  <template id=\"graph-template\">\n  <section class=\"graph\">\n    \
                  <div class=\"graph-head\">\n      \
+                 <button type=\"button\" class=\"graph-button graph-grip\" title=\"Drag to move this panel\" aria-label=\"Drag to move this panel\"><svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"currentColor\" aria-hidden=\"true\"><circle cx=\"9\" cy=\"6\" r=\"1.6\"/><circle cx=\"15\" cy=\"6\" r=\"1.6\"/><circle cx=\"9\" cy=\"12\" r=\"1.6\"/><circle cx=\"15\" cy=\"12\" r=\"1.6\"/><circle cx=\"9\" cy=\"18\" r=\"1.6\"/><circle cx=\"15\" cy=\"18\" r=\"1.6\"/></svg></button>\n      \
                  <select class=\"metric-select fit-content\" aria-label=\"Metric\">\n{options}      </select>\n      \
                  <button type=\"button\" class=\"graph-button graph-delete\" \
                  title=\"Remove this graph\" aria-label=\"Remove this graph\"><svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6\"/></svg></button>\n    </div>\n    \
@@ -356,7 +357,7 @@ fn render_page(site: &Site, metrics: &Result<Value, CollectorError>) -> String {
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  \
          <title>{title}</title>\n  \
          <link rel=\"icon\" type=\"image/svg+xml\" href=\"{base}/assets/favicon.svg?v={VERSION}\">\n  \
-         <link rel=\"stylesheet\" href=\"{base}/assets/page.css?v={VERSION}\">\n</head>\n<body>\n\
+         <link rel=\"stylesheet\" href=\"{base}/assets/page.css?v={VERSION}\">\n</head>\n<body data-time-dock>\n\
          <main>\n<h1>{title}</h1>\n{}</main>\n</body>\n</html>\n",
         render_fragment(site, metrics)
     )
