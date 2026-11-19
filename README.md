@@ -64,10 +64,16 @@ and group only.
 
 `smweb` is a small read-only web server, built alongside the daemon and shipped
 in the same release archive and image. It serves the chart of any metric over
-the last hour, 6 hours, day or week, refreshing every 5 seconds. Add as many
-graphs as you like with **Add** (and remove them again; one always stays): the
-layout is remembered in a cookie, and every graph shares the time range and
-the hover cursor. Drag across any graph to select a period: all graphs then
+the last hour, 6 hours, day or week, refreshing every 5 seconds. Each graph is
+a panel on a grid of rows split into 6 columns. Add panels with **Add** (a new
+one gets its own row at the bottom; remove one with its bin icon, though one
+always stays). Drag a panel by its grip to move it (the others make room, and a
+see-through copy follows the pointer), and drag the edge between two panels in a
+row to resize them. A panel is 2 to 6 columns wide, a row holds at most 3 panels
+and is always full, so removing a panel widens its neighbour. The layout is
+remembered in a cookie, and every graph shares the time range and the hover
+cursor, whose time is shown once in a bar below the panels (docked to the foot
+of the window on smweb's own page). Drag across any graph to select a period: all graphs then
 show just that, "Last" is greyed out, and **Reset** goes back to it. The line is
 the average and the shaded band the smallest-to-largest value in each time
 bucket, so a short spike still shows on a week-long chart. The page, its
@@ -366,6 +372,7 @@ cargo test
 | `Dockerfile` | The image: the release's static binaries in an empty image (built by the release workflow, not by hand) |
 | `deploy/` | OpenTofu configuration that runs the image on a remote machine over SSH (see "Deploying with Docker") |
 | `sms` | A thin wrapper around `tofu` for `deploy/`: `./sms NAME plan`, `./sms NAME apply`... with that machine's config file and per-machine state |
+| `dev_web.sh` | Runs the daemon and `smweb` together for working on the page, rebuilding and restarting `smweb` when `web/` or `src/` changes |
 | `run_local.sh` | Builds and runs the daemon in the foreground for development (used with `smq --local`) |
 | `tests/daemon.rs` | End to end: runs the real binary on a real socket, including kill-and-restart with a state directory |
 | `tests/smq.rs` | End to end: runs the real `smq` against the real daemon |

@@ -30,7 +30,7 @@ body {
   font: 16px/1.5 system-ui, sans-serif;
 }
 main {
-  max-width: 64rem;
+  max-width: 90rem;
   margin: 0 auto;
   padding: 1rem;
 }
@@ -70,4 +70,20 @@ article {
 article header {
   font-weight: 600;
   margin-bottom: 0.5rem;
+}
+
+/* On this page the time bar (metrics.js) is docked at the foot of the window,
+   and a spacer keeps the last panels clear of it. */
+body[data-time-dock] #time-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 900;
+  margin: 0;
+  padding: 0.35rem 1rem;
+  background: var(--page-bg, Canvas);
+}
+.dock-spacer {
+  height: 2.5rem;
 }
