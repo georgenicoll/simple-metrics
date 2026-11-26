@@ -18,7 +18,7 @@ pub enum Outcome {
     /// Nothing more: exit with this code. (Any output has been written.)
     Exit(u8),
     /// Run the daemon with these settings.
-    Serve(Config),
+    Serve(Box<Config>),
 }
 
 /// Interprets `args` (not including the program name), writing normal output

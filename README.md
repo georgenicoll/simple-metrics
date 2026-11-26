@@ -14,7 +14,8 @@ like a Raspberry Pi and has nothing to install alongside it.
 
 ## What it measures
 
-Every record holds the same set of values, taken together:
+Every record holds the same set of values, taken together (except the one
+marked as calculated):
 
 | Metric | Unit | Source |
 |---|---|---|
@@ -27,11 +28,17 @@ Every record holds the same set of values, taken together:
 | `cpu_temp_celsius` | °C | `/sys/class/thermal/thermal_zone0/temp` |
 | `net_<iface>_rx_bytes_per_sec` | bytes/s | `/proc/net/dev` (change since the last sample) |
 | `net_<iface>_tx_bytes_per_sec` | bytes/s | `/proc/net/dev` |
+| `disk_<dev>_read_bytes_per_sec` | bytes/s | `/proc/diskstats` (change since the last sample) |
+| `disk_<dev>_write_bytes_per_sec` | bytes/s | `/proc/diskstats` |
+| `disk_<dev>_total_bytes_per_sec` | bytes/s | Calculated: read plus written. Not stored, so it takes no memory. Added for each record before any downsampling, so its `min` and `max` are real ones; a gap if either part is |
+| `disk_<dev>_busy_percent` | % | `/proc/diskstats`: the share of the time with I/O in progress. On an SSD, which handles many requests at once, 100% doesn't mean it can take no more. A gap for a device that doesn't count the time (software RAID) |
 
 The network interfaces are `eth0`, `wlan0`, `wlan1`, `br-ap` and `wg0` unless
 you say otherwise: name others with `--interface`, or chart every interface
 the machine has with `--interface all` (see "Choosing the network interfaces").
-A value that can't be worked out (an interface that isn't
+The disks are the machine's physical ones unless you say otherwise (see
+"Choosing the disks").
+A value that can't be worked out (an interface or disk that isn't
 there, a counter that was reset, the first sample's rates, a file that can't be
 read) is a **gap**: `null` in the JSON, never a misleading zero.
 
@@ -119,8 +126,9 @@ Room for every record is allocated once, when it starts, and never grows, and
 all of it is touched at startup so it is really taken then, not gradually over
 days as it fills (a shortage shows immediately). The default is one sample
 every 5 seconds for 7 days, which is 120,960 records of 15 values plus a
-timestamp: about **15 MB**. (Measured: 16.9 MB resident from the first second,
-whether the history is empty or full.) A full read of the whole history streams out as
+timestamp: about **15 MB**, plus about 3 MB for each disk. (Measured before disks were
+added: 16.9 MB resident from the first second, whether the history is empty or
+full.) A full read of the whole history streams out as
 about 11 MB of JSON in around 100 ms; ask for a subset, a range or a
 downsampled result (see below) to get far less.
 
@@ -138,6 +146,7 @@ simple-metrics --socket /run/simple-metrics/simple-metrics.sock
 | `--retention <TIME>` | `7d` | How much history to keep. The number of records is this divided by the interval. |
 | `--interface <NAME>` | `eth0 wlan0 wlan1 br-ap wg0` | A network interface to report on. Repeat for several; giving any replaces the defaults. `all` means every interface the machine has (see "Choosing the network interfaces"). |
 | `--ignore-interface <PREFIX>` | none | With `--interface all`: skip the interfaces whose names start with `PREFIX`. Repeat for several. |
+| `--disk <NAME>` | `physical` | A disk to report on. Repeat for several; giving any replaces the default. `physical` means every physical disk the machine has (see "Choosing the disks"). |
 | `--state-dir <DIR>` | none | Also keep the history in `DIR/history.bin`, so it survives restarts and reboots. See "Keeping the history". Created if need be. |
 | `--flush-interval <TIME>` | `1m` | How often new records are written to that file. |
 | `--root <DIR>` | `/` | Read `proc/` and `sys/` under this directory. For testing. |
@@ -191,6 +200,31 @@ Things to know:
   and five interfaces. At most 64 interfaces are charted; with more, the
   daemon refuses to start and says to ignore some. (Size any memory limit
   for the process accordingly.)
+
+## Choosing the disks
+
+By default the daemon reports on every **physical disk** the machine has, such
+as `sda`, `nvme0n1` or a Pi's `mmcblk0`. That means each entry in `/sys/block`
+backed by a device, other than optical and floppy drives, an eMMC's boot areas
+and drives with nothing in them. Partitions and virtual devices (`loop`, `ram`,
+`zram`, `nbd`, `md`, `dm-`) are left out.
+
+To chart something else, name it with `--disk`, once for each, using the names
+in `/proc/diskstats`. Naming any replaces the default, so add
+`--disk physical` to keep the physical disks too:
+
+```bash
+simple-metrics --disk physical --disk md0
+```
+
+As with interfaces, the set is worked out **once, when the daemon starts** (a
+disk plugged in later isn't charted until it restarts), the daemon logs it, a
+named disk that isn't there is a gap, and a change of set keeps the history of
+what remains. Each disk costs about 3 MB at the default interval and retention;
+at most 64 are charted.
+
+Disks in a mirror each report their own traffic, so a write to the array shows
+on every one of them.
 
 ## Keeping the history
 
@@ -377,7 +411,7 @@ cargo test
 | `tests/daemon.rs` | End to end: runs the real binary on a real socket, including kill-and-restart with a state directory |
 | `tests/smq.rs` | End to end: runs the real `smq` against the real daemon |
 | `tests/smweb.rs` | End to end: runs the real `smweb` against the real daemon, over TCP and a Unix socket |
-| `tests/fixtures/root/` | Real `/proc` and `/sys` files captured from a Raspberry Pi 5, used by the tests |
+| `tests/fixtures/root/` | `/proc` and `/sys` files used by the tests: captured from a Raspberry Pi 5, except the disk ones (`diskstats` and `sys/block/`), which are made up |
 
 Lint rules live in `Cargo.toml` (`[lints]`) and `clippy.toml`: `unsafe` is
 forbidden, and `unwrap`/`expect`/`panic` are warned about outside tests, since

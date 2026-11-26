@@ -1,7 +1,7 @@
 //! Turns successive [`Readings`] of the machine into rows of values.
 //!
 //! Some readings are gauges (memory in use right now) and go straight into the
-//! row. Others are cumulative counters (CPU ticks, bytes sent) and only mean
+//! row. Others are cumulative counters (CPU ticks, bytes sent or written) and only mean
 //! something as a change since the previous reading, so the sampler remembers
 //! the last one. The first row therefore has no rates. A value that can't be
 //! worked out is `NaN`, which the protocol reports as `null`: a gap in the
@@ -10,12 +10,13 @@
 use std::collections::HashMap;
 
 use crate::metrics::Schema;
-use crate::proc::{CpuTimes, NetCounters, Readings};
+use crate::proc::{CpuTimes, DiskCounters, NetCounters, Readings};
 
 /// Remembers the previous counters so it can turn the next ones into rates.
 #[derive(Debug)]
 pub struct Sampler {
     interfaces: Vec<String>,
+    disks: Vec<String>,
     previous: Option<Previous>,
 }
 
@@ -23,15 +24,17 @@ pub struct Sampler {
 struct Previous {
     cpu: Option<CpuTimes>,
     net: HashMap<String, NetCounters>,
+    disks: HashMap<String, DiskCounters>,
 }
 
 impl Sampler {
-    /// A sampler that reports on these network `interfaces`, in this order.
-    /// (The order must match [`crate::metrics::Schema::new`].)
+    /// A sampler that reports on these network `interfaces` and `disks`, in
+    /// this order. (The order must match [`crate::metrics::Schema::new`].)
     #[must_use]
-    pub fn new(interfaces: Vec<String>) -> Self {
+    pub fn new(interfaces: Vec<String>, disks: Vec<String>) -> Self {
         Self {
             interfaces,
+            disks,
             previous: None,
         }
     }
@@ -41,7 +44,8 @@ impl Sampler {
     /// call, and is what the counters' changes are divided by.
     pub fn sample(&mut self, readings: &Readings, elapsed_secs: f64) -> Vec<f64> {
         let previous = self.previous.take();
-        let mut row = Vec::with_capacity(Schema::width_for(self.interfaces.len()));
+        let mut row =
+            Vec::with_capacity(Schema::width_for(self.interfaces.len(), self.disks.len()));
 
         row.push(cpu_percent(
             previous.as_ref().and_then(|p| p.cpu),
@@ -77,9 +81,30 @@ impl Sampler {
             ));
         }
 
+        for disk in &self.disks {
+            let before = previous.as_ref().and_then(|p| p.disks.get(disk));
+            let now = readings.disks.get(disk);
+            row.push(rate(
+                before.map(|c| c.read_bytes),
+                now.map(|c| c.read_bytes),
+                elapsed_secs,
+            ));
+            row.push(rate(
+                before.map(|c| c.write_bytes),
+                now.map(|c| c.write_bytes),
+                elapsed_secs,
+            ));
+            row.push(busy_percent(
+                before.and_then(|c| c.busy_millis),
+                now.and_then(|c| c.busy_millis),
+                elapsed_secs,
+            ));
+        }
+
         self.previous = Some(Previous {
             cpu: readings.cpu,
             net: readings.net.clone(),
+            disks: readings.disks.clone(),
         });
         row
     }
@@ -131,6 +156,14 @@ fn rate(before: Option<u64>, now: Option<u64>, elapsed_secs: f64) -> f64 {
     }
 }
 
+/// The share of the elapsed time a disk was busy, from its cumulative busy
+/// milliseconds.
+fn busy_percent(before: Option<u64>, now: Option<u64>, elapsed_secs: f64) -> f64 {
+    // Milliseconds per second, over ten, is a percentage. The kernel's clock
+    // and ours differ slightly, so a disk busy throughout can exceed 100.
+    (rate(before, now, elapsed_secs) / 10.0).clamp(0.0, 100.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,11 +199,68 @@ mod tests {
                     tx_bytes: eth0.1,
                 },
             )]),
+            disks: HashMap::new(),
         }
     }
 
     fn sampler() -> Sampler {
-        Sampler::new(vec!["eth0".to_owned(), "wg0".to_owned()])
+        Sampler::new(vec!["eth0".to_owned(), "wg0".to_owned()], Vec::new())
+    }
+
+    /// A sampler with one disk, `sda`, and no interfaces: its metrics are at
+    /// positions 7 (read), 8 (write) and 9 (busy).
+    fn disk_sampler() -> Sampler {
+        Sampler::new(Vec::new(), vec!["sda".to_owned()])
+    }
+
+    fn disk_readings(read_bytes: u64, write_bytes: u64, busy_millis: Option<u64>) -> Readings {
+        Readings {
+            disks: HashMap::from([(
+                "sda".to_owned(),
+                DiskCounters {
+                    read_bytes,
+                    write_bytes,
+                    busy_millis,
+                },
+            )]),
+            ..Readings::default()
+        }
+    }
+
+    #[test]
+    fn disk_rates_and_busy_share_come_from_the_change() {
+        let mut sampler = disk_sampler();
+        let first = sampler.sample(&disk_readings(1000, 2000, Some(100)), 5.0);
+        assert!(first[7..].iter().all(|v| v.is_nan()));
+        // Busy for 1250 of 5000 ms.
+        let row = sampler.sample(&disk_readings(6000, 2500, Some(1350)), 5.0);
+        assert_eq!(row.len(), 10);
+        assert!((row[7] - 1000.0).abs() < 1e-9);
+        assert!((row[8] - 100.0).abs() < 1e-9);
+        assert!((row[9] - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_disk_is_never_more_than_fully_busy() {
+        let mut sampler = disk_sampler();
+        sampler.sample(&disk_readings(0, 0, Some(0)), 5.0);
+        let row = sampler.sample(&disk_readings(0, 0, Some(5010)), 5.0);
+        assert!((row[9] - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn unknown_busy_time_and_a_reset_or_missing_disk_are_gaps() {
+        let mut sampler = disk_sampler();
+        sampler.sample(&disk_readings(500, 500, None), 5.0);
+        let row = sampler.sample(&disk_readings(1000, 1000, None), 5.0);
+        assert!(!row[7].is_nan());
+        assert!(row[9].is_nan(), "no accounting is not 0% busy");
+        // Counters that went backwards (the disk was replaced).
+        sampler.sample(&disk_readings(0, 0, Some(900)), 5.0);
+        let row = sampler.sample(&disk_readings(0, 0, Some(10)), 5.0);
+        assert!(row[9].is_nan());
+        let row = sampler.sample(&Readings::default(), 5.0);
+        assert!(row[7..].iter().all(|v| v.is_nan()));
     }
 
     #[test]

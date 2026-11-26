@@ -68,6 +68,17 @@ variable "ignore_interfaces" {
   }
 }
 
+variable "disks" {
+  description = "The disks to chart. Leave empty (the default) for every physical disk the machine has when the collector starts; or list names as `lsblk` shows them (e.g. md0), adding \"physical\" to keep the physical ones too. One that doesn't exist is a gap in the chart, not an error."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for name in var.disks : can(regex("^[A-Za-z0-9._-]{1,31}$", name))])
+    error_message = "disk names must be 1 to 31 letters, digits, dots, dashes or underscores (or \"physical\")."
+  }
+}
+
 variable "interval" {
   description = "How often to sample (e.g. 5s)."
   type        = string

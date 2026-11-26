@@ -93,9 +93,10 @@ pub fn run(config: &Config) -> Result<Infallible, DaemonError> {
     let config = &config
         .clone()
         .resolve_interfaces(&proc::interface_names(&config.root))
+        .and_then(|resolved| resolved.resolve_disks(&proc::physical_disk_names(&config.root)))
         .map_err(DaemonError::Config)?;
-    let schema = Schema::new(&config.interfaces);
-    let mut store = Store::new(config.capacity, schema.len()).ok_or(DaemonError::TooLarge)?;
+    let schema = Schema::new(&config.interfaces, &config.disks);
+    let mut store = Store::new(config.capacity, schema.width()).ok_or(DaemonError::TooLarge)?;
     let history = match &config.state_dir {
         Some(dir) => Some(open_history(dir, &schema, &mut store, config)?),
         None => None,
@@ -120,6 +121,7 @@ pub fn run(config: &Config) -> Result<Infallible, DaemonError> {
 
     let sampling = SamplingPlan {
         interfaces: config.interfaces.clone(),
+        disks: config.disks.clone(),
         interval: config.interval,
         root: config.root.clone(),
         journal,
@@ -137,12 +139,17 @@ pub fn run(config: &Config) -> Result<Infallible, DaemonError> {
         config.socket.display(),
         config.interval,
         config.capacity,
-        Store::bytes_for(config.capacity.get(), shared.schema.len()).unwrap_or(0) >> 20,
+        Store::bytes_for(config.capacity.get(), shared.schema.width()).unwrap_or(0) >> 20,
     ));
     crate::log(format_args!(
         "charting {} network interfaces: {}",
         config.interfaces.len(),
         config.interfaces.join(" ")
+    ));
+    crate::log(format_args!(
+        "charting {} disks: {}",
+        config.disks.len(),
+        config.disks.join(" ")
     ));
     server::serve(&listener, &shared)
 }
@@ -182,7 +189,7 @@ fn open_history(
     };
     fs::create_dir_all(dir).map_err(state_error)?;
     let path = dir.join(persist::FILE_NAME);
-    let names: Vec<String> = schema.metrics().iter().map(|m| m.name.clone()).collect();
+    let names = schema.stored_names();
     // Anything older than the retention is dropped as it is loaded - unless
     // the clock looks unset (a Pi that hasn't reached the network yet), when
     // it would drop everything.
@@ -228,6 +235,7 @@ fn open_history(
 /// What the sampler thread needs to know.
 struct SamplingPlan {
     interfaces: Vec<String>,
+    disks: Vec<String>,
     interval: Duration,
     root: PathBuf,
     /// Where new records are also written, if the history is kept on disk.
@@ -250,7 +258,7 @@ const CLOCK_GRACE: Duration = Duration::from_mins(15);
 
 /// Takes a sample now and then every `interval`, for ever.
 fn sample_forever(shared: &Shared, mut plan: SamplingPlan) -> ! {
-    let mut sampler = Sampler::new(plan.interfaces.clone());
+    let mut sampler = Sampler::new(plan.interfaces.clone(), plan.disks.clone());
     let started = Instant::now();
     let mut last = started;
     let mut next = last;

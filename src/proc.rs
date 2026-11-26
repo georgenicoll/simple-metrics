@@ -39,8 +39,24 @@ pub struct NetCounters {
     pub tx_bytes: u64,
 }
 
+/// One block device's cumulative counters from `/proc/diskstats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskCounters {
+    /// Bytes read since boot.
+    pub read_bytes: u64,
+    /// Bytes written since boot.
+    pub write_bytes: u64,
+    /// Milliseconds with at least one request in progress, since boot. `None`
+    /// for a device that has done I/O without ever counting any (software
+    /// RAID), where zero would be misleading.
+    pub busy_millis: Option<u64>,
+}
+
+/// `/proc/diskstats` counts in sectors of this size, whatever the device's is.
+const SECTOR_BYTES: u64 = 512;
+
 /// Everything read from the machine in one pass. A field is `None` (or an
-/// interface absent) when it couldn't be read.
+/// interface or disk absent) when it couldn't be read.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Readings {
     /// CPU time counters.
@@ -53,6 +69,8 @@ pub struct Readings {
     pub temperature: Option<f64>,
     /// Byte counters by interface name.
     pub net: HashMap<String, NetCounters>,
+    /// I/O counters by block device name.
+    pub disks: HashMap<String, DiskCounters>,
 }
 
 impl Readings {
@@ -71,6 +89,9 @@ impl Readings {
             net: read("proc/net/dev")
                 .as_deref()
                 .map_or_default(parse_net_dev),
+            disks: read("proc/diskstats")
+                .as_deref()
+                .map_or_default(parse_diskstats),
         }
     }
 }
@@ -81,6 +102,35 @@ impl Readings {
 pub fn interface_names(root: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_to_string(root.join("proc/net/dev"))
         .map_or_default(|text| parse_net_dev(&text).into_keys().collect());
+    names.sort();
+    names
+}
+
+/// The names of the machine's physical disks, from `sys/block` under `root`,
+/// in name order. Empty if that can't be read.
+///
+/// Physical means backed by a device, which leaves out `loop`, `ram`, `zram`,
+/// `nbd`, `md` and `dm` devices. Also left out: optical and floppy drives, an
+/// eMMC's boot areas, and anything with no capacity (a card reader with no
+/// card in it).
+#[must_use]
+pub fn physical_disk_names(root: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(root.join("sys/block")) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let path = entry.path();
+            let unwanted = name.starts_with("sr")
+                || name.starts_with("fd")
+                || (name.starts_with("mmcblk") && name.contains("boot"));
+            let has_capacity = fs::read_to_string(path.join("size"))
+                .is_ok_and(|size| size.trim().parse::<u64>().is_ok_and(|sectors| sectors > 0));
+            (!unwanted && has_capacity && path.join("device").exists()).then_some(name)
+        })
+        .collect();
     names.sort();
     names
 }
@@ -174,6 +224,47 @@ pub fn parse_net_dev(net_dev: &str) -> HashMap<String, NetCounters> {
         .collect()
 }
 
+/// Parses `/proc/diskstats`. Each line is the device's major and minor
+/// numbers and name, then its counters, of which the third is sectors read,
+/// the seventh sectors written and the tenth milliseconds busy. Lines that
+/// don't fit that shape are skipped.
+#[must_use]
+pub fn parse_diskstats(diskstats: &str) -> HashMap<String, DiskCounters> {
+    diskstats
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace().skip(2);
+            let name = parts.next()?;
+            let fields: Vec<u64> = parts.map(str::parse).collect::<Result<_, _>>().ok()?;
+            let [
+                reads,
+                _,
+                sectors_read,
+                _,
+                writes,
+                _,
+                sectors_written,
+                _,
+                _,
+                busy,
+                ..,
+            ] = fields[..]
+            else {
+                return None;
+            };
+            let accounted = busy > 0 || (reads == 0 && writes == 0);
+            Some((
+                name.to_owned(),
+                DiskCounters {
+                    read_bytes: sectors_read.saturating_mul(SECTOR_BYTES),
+                    write_bytes: sectors_written.saturating_mul(SECTOR_BYTES),
+                    busy_millis: accounted.then_some(busy),
+                },
+            ))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +274,7 @@ mod tests {
     const LOADAVG: &str = include_str!("../tests/fixtures/root/proc/loadavg");
     const MEMINFO: &str = include_str!("../tests/fixtures/root/proc/meminfo");
     const NET_DEV: &str = include_str!("../tests/fixtures/root/proc/net/dev");
+    const DISKSTATS: &str = include_str!("../tests/fixtures/root/proc/diskstats");
 
     #[test]
     fn the_interface_names_are_listed_in_order() {
@@ -333,6 +425,51 @@ mod tests {
     }
 
     #[test]
+    fn diskstats_counts_bytes_from_512_byte_sectors() {
+        let disks = parse_diskstats(DISKSTATS);
+        assert_eq!(
+            disks["mmcblk0"],
+            DiskCounters {
+                read_bytes: 800_000 * 512,
+                write_bytes: 240_000 * 512,
+                busy_millis: Some(9000),
+            }
+        );
+        assert!(disks.contains_key("mmcblk0p1"));
+    }
+
+    #[test]
+    fn diskstats_gives_no_busy_time_for_a_device_that_never_counts_it() {
+        // A software RAID device: lots of I/O, no time at all.
+        let text = "9 0 md0 11626891 0 6908688760 0 47743199 0 2782007536 0 0 0 0\n\
+                    8 0 sda 0 0 0 0 0 0 0 0 0 0 0\n";
+        let disks = parse_diskstats(text);
+        assert_eq!(disks["md0"].busy_millis, None);
+        assert_eq!(disks["sda"].busy_millis, Some(0), "idle is not unknown");
+    }
+
+    #[test]
+    fn diskstats_skips_malformed_lines() {
+        let text = "\n8 0 short 1 2 3\n8 0 bad a 0 0 0 0 0 0 0 0 0\n\
+                    8 0 ok 1 0 2 0 1 0 4 0 0 5 5\n";
+        let disks = parse_diskstats(text);
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks["ok"].write_bytes, 4 * 512);
+    }
+
+    #[test]
+    fn only_physical_disks_with_something_in_them_are_listed() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/root");
+        // The fixture also has loop0 (no device), mmcblk0boot0, sr0 and an
+        // empty card reader, sda.
+        assert_eq!(physical_disk_names(&root), ["mmcblk0"]);
+        assert_eq!(
+            physical_disk_names(Path::new("/nonexistent")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn reading_a_missing_root_gives_empty_readings() {
         let readings = Readings::read(Path::new("/this/does/not/exist"));
         assert_eq!(readings, Readings::default());
@@ -347,5 +484,6 @@ mod tests {
         assert!(readings.memory.is_some());
         assert_eq!(readings.temperature, Some(48.686));
         assert!(readings.net.contains_key("eth0"));
+        assert!(readings.disks.contains_key("mmcblk0"));
     }
 }

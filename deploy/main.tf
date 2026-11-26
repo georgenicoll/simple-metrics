@@ -68,6 +68,8 @@ resource "docker_container" "collector" {
     flatten([for name in var.interfaces : ["--interface", name]]),
     # Only meaningful with "all"; the collector refuses it otherwise.
     contains(var.interfaces, "all") ? flatten([for prefix in var.ignore_interfaces : ["--ignore-interface", prefix]]) : [],
+    # None given means the physical disks; older images don't take --disk.
+    flatten([for name in var.disks : ["--disk", name]]),
   )
 
   # See the comment at the top: the machine's interfaces, not a container's.
@@ -75,8 +77,9 @@ resource "docker_container" "collector" {
 
   user      = local.user
   read_only = true
-  # About 15 MB of history, and about 2 MB more for each interface charted
-  # (at the default interval and retention), with room to copy a read out.
+  # About 8 MB of history, about 2 MB more for each interface charted and 3 MB
+  # for each disk (at the default interval and retention), with room to copy a
+  # read out.
   memory        = 256
   memory_swap   = 256
   security_opts = ["no-new-privileges:true"]
