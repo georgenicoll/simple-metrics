@@ -38,6 +38,34 @@ impl fmt::Display for PushError {
 
 impl std::error::Error for PushError {}
 
+/// Where a metric's value comes from in a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    /// The value at this index.
+    Stored(usize),
+    /// The sum of the values at these two indices, worked out when asked for.
+    Sum(usize, usize),
+}
+
+impl Column {
+    /// The value in the record `row`: `NaN` if an index is past its end, and
+    /// for a sum if either part is `NaN`.
+    #[must_use]
+    pub fn value(self, row: &[f64]) -> f64 {
+        let at = |index: usize| row.get(index).copied().unwrap_or(f64::NAN);
+        match self {
+            Self::Stored(index) => at(index),
+            Self::Sum(a, b) => at(a) + at(b),
+        }
+    }
+}
+
+impl From<usize> for Column {
+    fn from(index: usize) -> Self {
+        Self::Stored(index)
+    }
+}
+
 /// The store's contents copied out as columns: one list of timestamps and one
 /// list of values per metric, all the same length, oldest first.
 #[derive(Debug, Clone, PartialEq)]
@@ -251,14 +279,14 @@ impl Store {
 
     /// Copies out the records from `from` to `to` (both inclusive, in
     /// milliseconds; `None` for no limit), oldest first, keeping only the
-    /// values at the `columns` indices, in that order. An index past the last
-    /// value gives `NaN`s.
+    /// values of the `columns` (indices, or [`Column`]s), in that order. An
+    /// index past the last value gives `NaN`s.
     #[must_use]
     pub fn snapshot_range(
         &self,
         from: Option<u64>,
         to: Option<u64>,
-        columns: &[usize],
+        columns: &[impl Into<Column> + Copy],
     ) -> Snapshot {
         let (start, end) = self.index_range(from, to);
         let mut timestamps = Vec::with_capacity(end - start);
@@ -268,7 +296,7 @@ impl Store {
             timestamps.push(self.timestamps[slot]);
             let row = self.row(slot);
             for (column, index) in out.iter_mut().zip(columns) {
-                column.push(row.get(*index).copied().unwrap_or(f64::NAN));
+                column.push((*index).into().value(row));
             }
         }
         Snapshot {
@@ -292,8 +320,8 @@ impl Store {
     }
 
     /// Groups the records from `from` to `to` (both inclusive; `None` for no
-    /// limit) into `step_ms`-wide buckets and summarises the values at the
-    /// `columns` indices in each: the mean, and the smallest and largest too if
+    /// limit) into `step_ms`-wide buckets and summarises the values of the
+    /// `columns` (indices, or [`Column`]s) in each: the mean, and the smallest and largest too if
     /// `extremes`. Values that aren't finite are left out; a bucket with none
     /// left has `NaN`. Every bucket from the first record's to the last's is
     /// present, so a stretch with no records shows as a run of `NaN`s.
@@ -304,7 +332,7 @@ impl Store {
         &self,
         from: Option<u64>,
         to: Option<u64>,
-        columns: &[usize],
+        columns: &[impl Into<Column> + Copy],
         step_ms: u64,
         extremes: bool,
     ) -> Result<Downsampled, TooManyBuckets> {
@@ -353,7 +381,10 @@ impl Store {
             }
             let row = self.row(slot);
             for (run, index) in running.iter_mut().zip(columns) {
-                if let Some(value) = row.get(*index).copied().filter(|v| v.is_finite()) {
+                // A sum is taken record by record, before summarising, so
+                // that its smallest and largest are ones that happened.
+                let value = (*index).into().value(row);
+                if value.is_finite() {
                     run.add(value);
                 }
             }
@@ -688,6 +719,24 @@ mod tests {
         assert_eq!(both.columns, [vec![20.0, 30.0], vec![2.0, 3.0]]);
         let one = store.snapshot_range(None, None, &[1]);
         assert_eq!(one.columns, [vec![10.0, 20.0, 30.0, 40.0, 50.0]]);
+    }
+
+    #[test]
+    fn a_sum_is_worked_out_for_each_record_before_summarising() {
+        let mut store = store(4, 2);
+        // The two parts peak at different times.
+        store.push(1000, &[10.0, 1.0]).unwrap();
+        store.push(2000, &[2.0, 8.0]).unwrap();
+        store.push(3000, &[f64::NAN, 100.0]).unwrap();
+        let sum = [Column::Sum(0, 1)];
+        let raw = store.snapshot_range(None, None, &sum);
+        assert_eq!(raw.columns[0][..2], [11.0, 10.0]);
+        assert!(raw.columns[0][2].is_nan(), "a missing part is a gap");
+        let summary = store.downsample(None, None, &sum, 10_000, true).unwrap();
+        assert!((summary.avg[0][0] - 10.5).abs() < 1e-9);
+        assert_eq!(summary.min.unwrap()[0], [10.0]);
+        // Not 18, the sum of the parts' largest.
+        assert_eq!(summary.max.unwrap()[0], [11.0]);
     }
 
     #[test]

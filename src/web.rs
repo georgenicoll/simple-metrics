@@ -275,7 +275,7 @@ fn render_fragment(site: &Site, metrics: &Result<Value, CollectorError>) -> Stri
                 html,
                 "<article>\n  <header>No metrics available</header>\n  \
                  <p>{}. It keeps this machine's history of CPU, memory, temperature and \
-                 network use; check that the simple-metrics service is running.</p>\n\
+                 network and disk use; check that the simple-metrics service is running.</p>\n\
                  </article>\n",
                 escape(&capitalise(&error.to_string()))
             )
@@ -284,10 +284,13 @@ fn render_fragment(site: &Site, metrics: &Result<Value, CollectorError>) -> Stri
         Ok(reply) => {
             let all = listing(reply);
             let mut options = String::new();
-            let (network, system): (Vec<_>, Vec<_>) = all
+            let (network, rest): (Vec<_>, Vec<_>) = all
                 .into_iter()
                 .partition(|(name, _, _)| name.starts_with("net_"));
-            for (heading, group) in [("System", system), ("Network", network)] {
+            let (disk, system): (Vec<_>, Vec<_>) = rest
+                .into_iter()
+                .partition(|(name, _, _)| name.starts_with("disk_"));
+            for (heading, group) in [("System", system), ("Network", network), ("Disk", disk)] {
                 if group.is_empty() {
                     continue;
                 }
@@ -973,6 +976,7 @@ mod tests {
             {"name": "cpu_percent", "label": "CPU use", "unit": "%"},
             {"name": "load1", "label": "Load <1 min>", "unit": ""},
             {"name": "net_eth0_rx_bytes_per_sec", "label": "eth0 received", "unit": "bytes/s"},
+            {"name": "disk_sda_busy_percent", "label": "sda busy", "unit": "%"},
         ]})
     }
 
@@ -1013,6 +1017,8 @@ mod tests {
         );
         assert!(html.contains("<optgroup label=\"System\">"));
         assert!(html.contains("<optgroup label=\"Network\">"));
+        let disks = html.split("<optgroup label=\"Disk\">").nth(1).unwrap();
+        assert!(disks.contains("<option value=\"disk_sda_busy_percent\">sda busy (%)</option>"));
         assert!(html.contains("<option value=\"cpu_percent\">CPU use (%)</option>"));
         assert!(html.contains("<option value=\"load1\">Load &lt;1 min&gt;</option>"));
         assert!(html.contains("<option value=\"1h\" selected>1h</option>"));

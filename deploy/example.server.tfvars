@@ -36,6 +36,12 @@ image = "ghcr.io/georgenicoll/simple-metrics:v0.8.1@sha256:e036f01e43c341797c8fb
 # the "veth" interfaces Docker makes for each container.
 # ignore_interfaces = ["veth"]
 
+# The disks to chart (needs image v0.9.0 or later). Left out, every physical
+# disk the machine has when the collector starts. To add others, such as a RAID
+# array, name them (see `lsblk`) along with "physical"; names alone chart only
+# those.
+# disks = ["physical", "md0"]
+
 # Where to serve the page. There is no login, so choose who can reach it: the
 # machine's LAN address (or "0.0.0.0" for every address), or "127.0.0.1" for
 # the machine only.

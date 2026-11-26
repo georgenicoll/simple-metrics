@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::metrics::{Schema, is_valid_interface};
+use crate::metrics::{Schema, is_valid_disk, is_valid_interface};
 use crate::store::Store;
 
 /// Where the socket goes unless told otherwise.
@@ -24,6 +24,12 @@ pub const ALL_INTERFACES: &str = "all";
 /// (at the default interval and retention), so a machine with hundreds of
 /// virtual ones must be asked to skip them (`--ignore-interface`).
 pub const MAX_INTERFACES: usize = 64;
+/// What `--disk` is given to mean "every physical disk the machine has",
+/// which is also the default.
+pub const PHYSICAL_DISKS: &str = "physical";
+/// The most disks that will be charted: each costs about 3 MB (at the default
+/// interval and retention).
+pub const MAX_DISKS: usize = 64;
 /// How often new records are written to the history file, if there is one.
 pub const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 /// The most memory the store may be sized to use. A guard against a typo such
@@ -34,8 +40,8 @@ pub const MAX_STORE_BYTES: usize = 1 << 30;
 pub const USAGE: &str = "\
 Usage: simple-metrics [OPTIONS]
 
-Samples this machine's CPU, memory, temperature and network use at a regular
-interval, keeps the most recent records in memory, and serves them over a
+Samples this machine's CPU, memory, temperature, network and disk use at a
+regular interval, keeps the most recent records in memory, and serves them over a
 Unix socket. Nothing is written to disk unless --state-dir is given.
 
 Options:
@@ -54,6 +60,10 @@ Options:
                             names start with PREFIX, e.g. veth for the
                             virtual ones Docker makes. Repeat for several.
                             An interface named with --interface is kept
+      --disk <NAME>         A disk to report on, e.g. sda or md0. Repeat for
+                            several; giving any replaces the default.
+                            `physical` means every physical disk the machine
+                            has when the daemon starts [default: physical]
       --state-dir <DIR>     Keep the history in DIR too, so it survives a
                             restart or reboot (created if need be; the file
                             is history.bin, readable only by this user)
@@ -95,6 +105,11 @@ pub struct Config {
     pub all_interfaces: bool,
     /// With `all_interfaces`: the name prefixes of interfaces to leave out.
     pub ignore_interfaces: Vec<String>,
+    /// The disks named on the command line, in order.
+    pub disks: Vec<String>,
+    /// Whether to report on every physical disk the machine has as well (see
+    /// [`Config::resolve_disks`], which does it).
+    pub physical_disks: bool,
     /// The directory `proc/` and `sys/` are read from.
     pub root: PathBuf,
 }
@@ -107,7 +122,7 @@ pub enum Parsed {
     /// Print the version and exit.
     Version,
     /// Run the daemon with these settings.
-    Run(Config),
+    Run(Box<Config>),
 }
 
 /// Why the command line couldn't be used.
@@ -128,6 +143,11 @@ pub enum ConfigError {
     },
     /// `--interface all` found more interfaces than are charted.
     TooManyInterfaces {
+        /// How many there were.
+        count: usize,
+    },
+    /// There were more disks than are charted.
+    TooManyDisks {
         /// How many there were.
         count: usize,
     },
@@ -152,6 +172,11 @@ impl fmt::Display for ConfigError {
                 f,
                 "--interface all found {count} network interfaces (at most {MAX_INTERFACES} are \
                  charted); skip some with --ignore-interface <PREFIX>"
+            ),
+            Self::TooManyDisks { count } => write!(
+                f,
+                "found {count} disks (at most {MAX_DISKS} are charted); name the ones wanted \
+                 with --disk <NAME>"
             ),
             Self::TooLarge { bytes: Some(bytes) } => write!(
                 f,
@@ -179,6 +204,7 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
     let mut interval = DEFAULT_INTERVAL;
     let mut retention = DEFAULT_RETENTION;
     let mut chosen = InterfaceArgs::default();
+    let mut disks = DiskArgs::default();
     let mut root = PathBuf::from("/");
     let mut state_dir = None;
     let mut flush_interval = DEFAULT_FLUSH_INTERVAL;
@@ -233,6 +259,12 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
                     .ignore(prefix.clone())
                     .map_err(|reason| invalid(&prefix, reason))?;
             }
+            "--disk" => {
+                let name = value(flag)?;
+                disks
+                    .add(name.clone())
+                    .map_err(|reason| invalid(&name, reason))?;
+            }
             "--state-dir" => state_dir = Some(PathBuf::from(value(flag)?)),
             "--flush-interval" => {
                 let text = value(flag)?;
@@ -243,23 +275,11 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
         }
     }
 
-    let InterfaceArgs {
-        mut interfaces,
-        all: all_interfaces,
-        ignore: ignore_interfaces,
-    } = chosen;
-    if let Some(prefix) = ignore_interfaces.first().filter(|_| !all_interfaces) {
-        return Err(ConfigError::InvalidValue {
-            flag: "--ignore-interface".to_owned(),
-            value: prefix.clone(),
-            reason: "only applies together with --interface all",
-        });
-    }
-    if interfaces.is_empty() && !all_interfaces {
-        interfaces = DEFAULT_INTERFACES.iter().map(ToString::to_string).collect();
-    }
-    let capacity = capacity_for(retention, interval, interfaces.len())?;
-    Ok(Parsed::Run(Config {
+    let chosen = chosen.finish()?;
+    let disks = disks.finish();
+    let (interfaces, disk_names) = (chosen.interfaces.len(), disks.disks.len());
+    let capacity = capacity_for(retention, interval, interfaces, disk_names)?;
+    Ok(Parsed::Run(Box::new(Config {
         socket,
         socket_mode,
         interval,
@@ -267,11 +287,13 @@ pub fn parse(args: &[String]) -> Result<Parsed, ConfigError> {
         capacity,
         state_dir,
         flush_interval,
-        interfaces,
-        all_interfaces,
-        ignore_interfaces,
+        interfaces: chosen.interfaces,
+        all_interfaces: chosen.all,
+        ignore_interfaces: chosen.ignore,
+        disks: disks.disks,
+        physical_disks: disks.physical,
         root,
-    }))
+    })))
 }
 
 /// The `--interface` and `--ignore-interface` options as they are given.
@@ -283,6 +305,21 @@ struct InterfaceArgs {
 }
 
 impl InterfaceArgs {
+    /// Checks the options against each other and fills in the defaults.
+    fn finish(mut self) -> Result<Self, ConfigError> {
+        if let Some(prefix) = self.ignore.first().filter(|_| !self.all) {
+            return Err(ConfigError::InvalidValue {
+                flag: "--ignore-interface".to_owned(),
+                value: prefix.clone(),
+                reason: "only applies together with --interface all",
+            });
+        }
+        if self.interfaces.is_empty() && !self.all {
+            self.interfaces = DEFAULT_INTERFACES.iter().map(ToString::to_string).collect();
+        }
+        Ok(self)
+    }
+
     /// An `--interface`: a name, or `all`.
     fn add(&mut self, name: String) -> Result<(), &'static str> {
         if name == ALL_INTERFACES {
@@ -311,6 +348,40 @@ impl InterfaceArgs {
             return Err("given more than once");
         }
         self.ignore.push(prefix);
+        Ok(())
+    }
+}
+
+/// The `--disk` options as they are given.
+#[derive(Default)]
+struct DiskArgs {
+    disks: Vec<String>,
+    physical: bool,
+}
+
+impl DiskArgs {
+    /// Fills in the default: the physical disks, if none were asked for.
+    fn finish(mut self) -> Self {
+        self.physical |= self.disks.is_empty();
+        self
+    }
+
+    /// A `--disk`: a name, or `physical`.
+    fn add(&mut self, name: String) -> Result<(), &'static str> {
+        if name == PHYSICAL_DISKS {
+            return if std::mem::replace(&mut self.physical, true) {
+                Err("given more than once")
+            } else {
+                Ok(())
+            };
+        }
+        if !is_valid_disk(&name) {
+            return Err("not a usable disk name");
+        }
+        if self.disks.contains(&name) {
+            return Err("given more than once");
+        }
+        self.disks.push(name);
         Ok(())
     }
 }
@@ -355,9 +426,48 @@ impl Config {
         if found.len() > MAX_INTERFACES {
             return Err(ConfigError::TooManyInterfaces { count: found.len() });
         }
-        self.capacity = capacity_for(self.retention, self.interval, found.len())?;
+        self.capacity = capacity_for(self.retention, self.interval, found.len(), self.disks.len())?;
         self.interfaces = found;
         self.all_interfaces = false;
+        Ok(self)
+    }
+
+    /// Works out the final list of disks. With `physical_disks`, it is every
+    /// one of `physical` (the machine's physical disks) in name order,
+    /// followed by any others named on the command line. Otherwise this
+    /// changes nothing.
+    ///
+    /// As for interfaces, the set is fixed from here on.
+    ///
+    /// # Errors
+    /// If there are too many disks, or the store for them would be too big.
+    pub fn resolve_disks(mut self, physical: &[String]) -> Result<Self, ConfigError> {
+        if !self.physical_disks {
+            return Ok(self);
+        }
+        let mut found: Vec<String> = physical
+            .iter()
+            .filter(|name| is_valid_disk(name))
+            .cloned()
+            .collect();
+        found.sort();
+        found.dedup();
+        for named in &self.disks {
+            if !found.contains(named) {
+                found.push(named.clone());
+            }
+        }
+        if found.len() > MAX_DISKS {
+            return Err(ConfigError::TooManyDisks { count: found.len() });
+        }
+        self.capacity = capacity_for(
+            self.retention,
+            self.interval,
+            self.interfaces.len(),
+            found.len(),
+        )?;
+        self.disks = found;
+        self.physical_disks = false;
         Ok(self)
     }
 }
@@ -368,13 +478,14 @@ fn capacity_for(
     retention: Duration,
     interval: Duration,
     interface_count: usize,
+    disk_count: usize,
 ) -> Result<NonZeroUsize, ConfigError> {
     // Rounded up, and at least one, so a retention shorter than the interval
     // still keeps the latest record.
     let records = retention.as_nanos().div_ceil(interval.as_nanos()).max(1);
     let too_large = ConfigError::TooLarge { bytes: None };
     let capacity = usize::try_from(records).map_err(|_| too_large.clone())?;
-    let bytes = Store::bytes_for(capacity, Schema::width_for(interface_count));
+    let bytes = Store::bytes_for(capacity, Schema::width_for(interface_count, disk_count));
     match bytes {
         Some(bytes) if bytes <= MAX_STORE_BYTES => NonZeroUsize::new(capacity).ok_or(too_large),
         _ => Err(ConfigError::TooLarge { bytes }),
@@ -419,7 +530,7 @@ mod tests {
 
     fn config(args: &[&str]) -> Config {
         match parse_args(args) {
-            Ok(Parsed::Run(config)) => config,
+            Ok(Parsed::Run(config)) => *config,
             other => panic!("expected settings, got {other:?}"),
         }
     }
@@ -673,6 +784,52 @@ mod tests {
     }
 
     #[test]
+    fn the_physical_disks_are_the_default() {
+        let config = config(&[]);
+        assert!(config.physical_disks);
+        assert_eq!(config.disks, Vec::<String>::new());
+        let resolved = config.resolve_disks(&names(&["sdb", "sda"])).unwrap();
+        assert_eq!(resolved.disks, ["sda", "sdb"]);
+        assert!(!resolved.physical_disks);
+    }
+
+    #[test]
+    fn naming_disks_replaces_the_default_unless_physical_is_asked_for_too() {
+        let only = config(&["--disk", "md0"])
+            .resolve_disks(&names(&["sda"]))
+            .unwrap();
+        assert_eq!(only.disks, ["md0"]);
+        let both = config(&["--disk=md0", "--disk", "physical", "--disk", "sda"])
+            .resolve_disks(&names(&["sda", "sdb"]))
+            .unwrap();
+        assert_eq!(both.disks, ["sda", "sdb", "md0"]);
+    }
+
+    #[test]
+    fn bad_and_repeated_disks_are_refused() {
+        assert_eq!(invalid_flag(&["--disk", "a b"]), "--disk");
+        assert_eq!(invalid_flag(&["--disk", "/dev/sda"]), "--disk");
+        assert_eq!(invalid_flag(&["--disk", "sda", "--disk", "sda"]), "--disk");
+        assert_eq!(
+            invalid_flag(&["--disk", "physical", "--disk", "physical"]),
+            "--disk"
+        );
+    }
+
+    #[test]
+    fn too_many_disks_is_an_error_that_says_what_to_do() {
+        let many: Vec<String> = (0..=MAX_DISKS).map(|n| format!("sd{n}")).collect();
+        let error = config(&[]).resolve_disks(&many).unwrap_err();
+        assert_eq!(
+            error,
+            ConfigError::TooManyDisks {
+                count: MAX_DISKS + 1
+            }
+        );
+        assert!(error.to_string().contains("--disk"));
+    }
+
+    #[test]
     fn the_socket_mode_is_octal_and_at_most_777() {
         assert_eq!(config(&["--socket-mode", "600"]).socket_mode, 0o600);
         assert_eq!(config(&["--socket-mode", "0660"]).socket_mode, 0o660);
@@ -706,6 +863,7 @@ mod tests {
             "--interval",
             "--retention",
             "--interface",
+            "--disk",
             "--root",
             "--socket-mode",
         ] {

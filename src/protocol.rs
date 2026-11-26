@@ -49,7 +49,7 @@ use serde_json::{Map, Value, json};
 use crate::VERSION as CRATE_VERSION;
 use crate::metrics::Schema;
 use crate::state::Shared;
-use crate::store::{Downsampled, MAX_BUCKETS, Snapshot, step_for_max_points};
+use crate::store::{Column, Downsampled, MAX_BUCKETS, Snapshot, step_for_max_points};
 
 /// The protocol version this server speaks.
 pub const VERSION: u32 = 1;
@@ -340,9 +340,9 @@ fn respond_latest<W: Write>(w: &mut W, shared: &Shared) -> io::Result<()> {
                 .schema
                 .metrics()
                 .iter()
-                .zip(row)
+                .zip(shared.schema.columns())
                 // A NaN (a value that couldn't be measured) becomes null.
-                .map(|(metric, value)| (metric.name.clone(), Value::from(value)))
+                .map(|(metric, column)| (metric.name.clone(), Value::from(column.value(&row))))
                 .collect();
             (Value::from(timestamp), values)
         }
@@ -368,17 +368,17 @@ enum Answer {
     },
 }
 
-/// The names and schema positions of the metrics a `read` asks for: all of
+/// The names and columns of the metrics a `read` asks for: all of
 /// them, or those listed (each once, in the order first listed).
 fn resolve_metrics(
     schema: &Schema,
     wanted: Option<&[String]>,
-) -> Result<(Vec<String>, Vec<usize>), String> {
+) -> Result<(Vec<String>, Vec<Column>), String> {
     let all = schema.metrics();
     let Some(wanted) = wanted else {
         return Ok((
             all.iter().map(|m| m.name.clone()).collect(),
-            (0..all.len()).collect(),
+            schema.columns().to_vec(),
         ));
     };
     let (mut names, mut columns) = (Vec::new(), Vec::new());
@@ -389,9 +389,9 @@ fn resolve_metrics(
                 "unknown metric \"{shown}\" (ask {{\"op\":\"metrics\"}} for the list)"
             ));
         };
-        if !columns.contains(&index) {
+        if !names.contains(name) {
             names.push(name.clone());
-            columns.push(index);
+            columns.push(schema.columns()[index]);
         }
     }
     Ok((names, columns))
@@ -495,8 +495,8 @@ mod tests {
     use crate::store::Store;
 
     fn shared_with(rows: &[(u64, &[f64])]) -> Shared {
-        let schema = Schema::new(&["eth0".to_owned()]);
-        let store = Store::new(NonZeroUsize::new(64).unwrap(), schema.len()).unwrap();
+        let schema = Schema::new(&["eth0".to_owned()], &[]);
+        let store = Store::new(NonZeroUsize::new(64).unwrap(), schema.width()).unwrap();
         let shared = Shared::new(schema, Duration::from_secs(5), store);
         for (timestamp, row) in rows {
             shared.write().push(*timestamp, row).unwrap();
@@ -823,8 +823,8 @@ mod tests {
 
     #[test]
     fn read_after_the_store_has_wrapped_is_still_oldest_first() {
-        let schema = Schema::new(&["eth0".to_owned()]);
-        let store = Store::new(NonZeroUsize::new(4).unwrap(), schema.len()).unwrap();
+        let schema = Schema::new(&["eth0".to_owned()], &[]);
+        let store = Store::new(NonZeroUsize::new(4).unwrap(), schema.width()).unwrap();
         let shared = Shared::new(schema, Duration::from_secs(5), store);
         for i in 1..=6_u32 {
             shared

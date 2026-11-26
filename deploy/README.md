@@ -6,7 +6,7 @@ It starts two containers:
 
 | Container | Runs | |
 |---|---|---|
-| `simple-metrics-collector` | `simple-metrics` | Samples the **host's** CPU, memory, temperature and network use. Shares the host's network namespace (the interfaces to chart are the machine's, not the container's) and sees the host's `/proc` and `/sys` read-only. Keeps its history in a volume, so it survives restarts and upgrades. |
+| `simple-metrics-collector` | `simple-metrics` | Samples the **host's** CPU, memory, temperature, network and disk use. Shares the host's network namespace (the interfaces to chart are the machine's, not the container's) and sees the host's `/proc` and `/sys` read-only. Keeps its history in a volume, so it survives restarts and upgrades. |
 | `simple-metrics-web` | `smweb` | The page, published on `http_bind_address:http_port` as plain HTTP. Reads from the collector over a Unix socket in a volume the two containers share, so the collector itself is not on the network. |
 
 Both run as an unprivileged user with a read-only root filesystem, all
@@ -47,6 +47,7 @@ $EDITOR deploy/server.tfvars
 | `image` | The image, pinned by digest: `ghcr.io/georgenicoll/simple-metrics:v0.6.1@sha256:...`. A release's `image` job prints this line in its summary. |
 | `interfaces` | The network interfaces to chart. The default, `["all"]`, charts every interface the machine has when the collector starts, except `lo` and the `ignore_interfaces`. Or list names, as `ip -br link` shows them (`["eth0", "wg0"]`), to fix the set. A name that doesn't exist is a gap in the chart, not an error. See "Which interfaces" below. |
 | `ignore_interfaces` | With `all`: leave out interfaces whose names **start with** any of these. Default `["veth"]`, the virtual interface Docker creates for each container. An interface named in `interfaces` is kept regardless. |
+| `disks` | The disks to chart (image `v0.9.0` or later). Left empty, the default, every physical disk the machine has when the collector starts. Or list names, as `lsblk` shows them, adding `"physical"` to keep the physical ones too (`["physical", "md0"]`). |
 | `http_bind_address`, `http_port` | Where the page is served. Default `127.0.0.1:8080`. Use the machine's LAN address, or `0.0.0.0` for every address. |
 | `title`, `interval`, `retention`, `name_prefix` | Optional: the page's heading (default: the host), how often to sample (`5s`), how long to keep (`7d`), and a prefix for the container and volume names. |
 
@@ -103,9 +104,17 @@ so on for the bridges). The list it settled on is in the collector's log
   ones lose their saved values; the rest is kept. Ignoring the interfaces that
   come and go (`veth`) keeps the charts tidy. If you need it absolutely fixed,
   list the interfaces instead of using `all`.
-- Each interface adds about 2 MB of memory; the collector's container is
-  limited to 256 MB, enough for the fixed metrics and dozens of interfaces
-  (at most 64 are charted).
+- Each interface adds about 2 MB of memory and each disk about 3 MB; the
+  collector's container is limited to 256 MB, enough for the fixed metrics and
+  dozens of both (at most 64 of each are charted).
+
+## Which disks
+
+With nothing in `disks`, the collector charts the machine's **physical** disks
+(such as `sda` or `nvme0n1`), found once, when it starts: not partitions, and
+not virtual devices such as `loop`, `md` (software RAID) or `dm-` (LVM). Name
+any of those in `disks` to chart it too. The list it settled on is in the
+collector's log. Changes to the set behave as they do for interfaces.
 
 ## Deploy
 

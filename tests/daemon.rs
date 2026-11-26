@@ -167,7 +167,7 @@ fn info_describes_the_collector() {
     assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(info["interval_ms"], 100);
     assert_eq!(info["capacity"], 100); // 10 s at 100 ms
-    assert_eq!(info["metrics"], 17); // 7 fixed + 2 for each of 5 interfaces
+    assert_eq!(info["metrics"], 21); // 7 fixed, 2 x 5 interfaces, 4 x 1 disk
 }
 
 #[test]
@@ -180,7 +180,16 @@ fn metrics_lists_the_default_metrics() {
         .iter()
         .map(|m| m["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 17);
+    assert_eq!(names.len(), 21);
+    assert_eq!(
+        &names[17..],
+        [
+            "disk_mmcblk0_read_bytes_per_sec",
+            "disk_mmcblk0_write_bytes_per_sec",
+            "disk_mmcblk0_total_bytes_per_sec",
+            "disk_mmcblk0_busy_percent"
+        ]
+    );
     assert_eq!(
         &names[..7],
         [
@@ -209,7 +218,7 @@ fn metrics_lists_the_default_metrics() {
 fn the_interface_setting_changes_the_metrics() {
     let daemon = Daemon::start(&["--interface", "eth0", "--interface", "wg0"]);
     let info = daemon.ask(&json!({"op": "info"}));
-    assert_eq!(info["metrics"], 11);
+    assert_eq!(info["metrics"], 15);
     let names = daemon.ask(&json!({"op": "metrics"}));
     assert!(names.to_string().contains("net_wg0_tx_bytes_per_sec"));
     assert!(!names.to_string().contains("wlan1"));
@@ -229,7 +238,15 @@ fn all_interfaces_charts_what_the_machine_has_except_lo_and_the_ignored() {
     for left_out in ["wlan0", "wlan1", "net_lo_"] {
         assert!(!names.contains(left_out), "{left_out}");
     }
-    assert_eq!(daemon.ask(&json!({"op": "info"}))["metrics"], 13); // 7 + 2 * 3
+    assert_eq!(daemon.ask(&json!({"op": "info"}))["metrics"], 17); // 7 + 2 * 3 + 4
+}
+
+#[test]
+fn the_disk_setting_replaces_the_physical_disks() {
+    let daemon = Daemon::start(&["--disk", "mmcblk0p1"]);
+    let names = daemon.ask(&json!({"op": "metrics"})).to_string();
+    assert!(names.contains("disk_mmcblk0p1_busy_percent"));
+    assert!(!names.contains("disk_mmcblk0_busy_percent"));
 }
 
 #[test]
@@ -249,6 +266,10 @@ fn latest_reports_the_values_in_the_fixture_files() {
     // network rates are zero...
     assert_eq!(values["net_eth0_rx_bytes_per_sec"], 0.0);
     assert_eq!(values["net_wg0_tx_bytes_per_sec"], 0.0);
+    // ...disk rates too...
+    assert_eq!(values["disk_mmcblk0_write_bytes_per_sec"], 0.0);
+    assert_eq!(values["disk_mmcblk0_total_bytes_per_sec"], 0.0);
+    assert_eq!(values["disk_mmcblk0_busy_percent"], 0.0);
     // ...and CPU time didn't pass, so there is no CPU percentage to give.
     assert!(values["cpu_percent"].is_null());
     assert!(latest["timestamp"].as_u64().unwrap() > 1_704_067_200_000);
@@ -268,7 +289,7 @@ fn read_returns_aligned_columns_oldest_first_with_a_gap_at_the_start() {
     );
 
     let series = reply["series"].as_object().unwrap();
-    assert_eq!(series.len(), 17);
+    assert_eq!(series.len(), 21);
     for (name, column) in series {
         assert_eq!(column.as_array().unwrap().len(), timestamps.len(), "{name}");
     }
@@ -765,7 +786,7 @@ fn the_history_file_is_private_and_stays_within_about_twice_the_capacity() {
     let mut largest = 0;
     let watching = Instant::now();
     while watching.elapsed() < Duration::from_secs(6) {
-        largest = largest.max(state.records_on_disk(17));
+        largest = largest.max(state.records_on_disk(20));
         thread::sleep(Duration::from_millis(20));
     }
     assert!(largest > 40, "it should grow past the capacity: {largest}");
@@ -773,7 +794,7 @@ fn the_history_file_is_private_and_stays_within_about_twice_the_capacity() {
         largest <= 84,
         "then be rewritten, not grow for ever: {largest}"
     );
-    assert!(state.records_on_disk(17) >= 40);
+    assert!(state.records_on_disk(20) >= 40);
     assert_eq!(info_len(&daemon), 40);
     assert_eq!(
         fs::metadata(state.file()).unwrap().permissions().mode() & 0o777,
@@ -787,7 +808,7 @@ fn history_recorded_for_other_interfaces_keeps_the_metrics_in_common() {
     let state = StateDir::new("schema");
     let first = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "100ms"]);
     first.wait_for_records(5);
-    wait_until(|| state.records_on_disk(17) >= 5, "records on disk");
+    wait_until(|| state.records_on_disk(20) >= 5, "records on disk");
     drop(first);
     let second = Daemon::start(&[
         "--state-dir",
@@ -800,7 +821,7 @@ fn history_recorded_for_other_interfaces_keeps_the_metrics_in_common() {
     let metrics = second.ask(&json!({"op": "info"}))["metrics"]
         .as_u64()
         .unwrap();
-    assert_eq!(metrics, 9);
+    assert_eq!(metrics, 13);
     // The first run's history carries over for the metrics they share
     // (everything but the interfaces that are gone), none misread.
     assert!(info_len(&second) >= 5);
@@ -819,7 +840,7 @@ fn a_damaged_end_of_the_file_costs_only_the_damage() {
     let state = StateDir::new("torn");
     let first = Daemon::start(&["--state-dir", &state.arg(), "--flush-interval", "100ms"]);
     first.wait_for_records(6);
-    wait_until(|| state.records_on_disk(17) >= 6, "records on disk");
+    wait_until(|| state.records_on_disk(20) >= 6, "records on disk");
     drop(first);
     let length = fs::metadata(state.file()).unwrap().len();
     fs::OpenOptions::new()
@@ -837,8 +858,11 @@ fn a_clock_behind_the_saved_history_holds_recording_back() {
     let state = StateDir::new("clock");
     fs::create_dir_all(&state.0).unwrap();
     // A saved history whose newest record is an hour in the future.
-    let schema = Schema::new(&["eth0", "wlan0", "wlan1", "br-ap", "wg0"].map(ToOwned::to_owned));
-    let mut store = Store::new(std::num::NonZeroUsize::new(100).unwrap(), schema.len()).unwrap();
+    let schema = Schema::new(
+        &["eth0", "wlan0", "wlan1", "br-ap", "wg0"].map(ToOwned::to_owned),
+        &["mmcblk0".to_owned()],
+    );
+    let mut store = Store::new(std::num::NonZeroUsize::new(100).unwrap(), schema.width()).unwrap();
     let now = u64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -849,12 +873,12 @@ fn a_clock_behind_the_saved_history_holds_recording_back() {
     let future = now + 3_600_000;
     for n in 0..5 {
         store
-            .push(future - 4000 + n * 1000, &vec![1.0; schema.len()])
+            .push(future - 4000 + n * 1000, &vec![1.0; schema.width()])
             .unwrap();
     }
     persist::Journal::start(
         state.file(),
-        schema.metrics().iter().map(|m| m.name.clone()).collect(),
+        schema.stored_names(),
         &store,
         Duration::from_secs(60),
     )
